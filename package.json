@@ -1,0 +1,12 @@
+{
+  "name": "gmail-continue-automate",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "node scripts/login-and-click.js",
+    "save-state": "node scripts/save-state.js"
+  },
+  "dependencies": {
+    "playwright": "^1.40.0"
+  }
+}
