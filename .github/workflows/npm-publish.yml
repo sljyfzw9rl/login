@@ -8,7 +8,7 @@ on:
 jobs:
   visit:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     strategy:
       matrix:
         instance: [1,2,3,4,5]
@@ -28,18 +28,32 @@ jobs:
         with:
           node-version: '18'
 
-      - name: Install deps & Playwright browsers (npm ci -> fallback to npm install)
+      - name: Install deps & Playwright browsers (npm ci -> fallback)
         run: |
           npm ci || npm install
           npx playwright install --with-deps
+
+      - name: Decode storageState (optional)
+        run: |
+          if [ -n "${{ secrets.GMAIL_STORAGE_STATE }}" ]; then
+            printf "%s" "${{ secrets.GMAIL_STORAGE_STATE }}" | base64 --decode > storageState.json
+            ls -l storageState.json
+          else
+            echo "No GMAIL_STORAGE_STATE secret set."
+          fi
 
       - name: Run login + click (matrix instance)
         run: node scripts/login-and-click.js
         env:
           INSTANCE: ${{ matrix.instance }}
 
-      - name: Upload screenshot
+      - name: Upload screenshots & debug artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: screenshot-${{ matrix.instance }}
-          path: opened-${{ matrix.instance }}-*.png
+          name: artifacts-instance-${{ matrix.instance }}
+          path: |
+            opened-${{ matrix.instance }}-*.png
+            debug-${{ matrix.instance }}-*.png
+            debug-${{ matrix.instance }}-*.html
+            debug-${{ matrix.instance }}-cookies.json
