@@ -78,9 +78,12 @@ const fs = require('fs');
       if (cur.includes('signin') || cur.includes('accounts.google.com/')) {
         return false;
       }
-      // coba cari elemen avatar / sign out link
-      const avatar = await page.$('img[alt*="Google Account"], [aria-label*="Google Account"], a[href*="Sign out"], text=Sign out');
-      return !!avatar;
+      // safer locator approach
+      const avatar = page.locator('img[alt*="Google Account"]');
+      if (await avatar.count() > 0) return true;
+      const signOut = page.locator('text=Sign out');
+      if (await signOut.count() > 0) return true;
+      return false;
     } catch (e) {
       console.warn(`[${INSTANCE}] checkMyAccount error: ${e.message}`);
       return false;
@@ -125,35 +128,50 @@ const fs = require('fs');
 
   // verifikasi target page: dengan EXPECTED_SELECTOR bila ada, atau heuristik
   async function verifyTarget(page) {
-    try {
-      const cur = page.url();
-      console.log(`[${INSTANCE}] target page url: ${cur}`);
-      if (cur.includes('accounts.google.com') || cur.includes('consent') || cur.includes('signin')) {
-        console.warn(`[${INSTANCE}] Redirected to sign-in/consent page.`);
-        return false;
-      }
-      if (EXPECTED_SELECTOR) {
-        try {
-          await page.waitForSelector(EXPECTED_SELECTOR, { timeout: 8000, state: 'visible' });
-          console.log(`[${INSTANCE}] Found expected selector: ${EXPECTED_SELECTOR}`);
-          return true;
-        } catch (e) {
-          console.warn(`[${INSTANCE}] Expected selector not found: ${EXPECTED_SELECTOR}`);
-          return false;
-        }
-      }
-      // fallback: cek body text tidak mengandung frasa sign-in
-      const body = (await page.textContent('body')) || '';
-      if (!/sign in|this app is from another developer|continue to the app|consent|authorize/i.test(body)) {
-        console.log(`[${INSTANCE}] Body heuristic OK (no obvious sign-in/consent text).`);
-        return true;
-      }
-      return false;
-    } catch (e) {
-      console.warn(`[${INSTANCE}] verifyTarget error: ${e.message}`);
+  try {
+    const cur = page.url();
+    console.log(`[${INSTANCE}] target page url: ${cur}`);
+    if (cur.includes('accounts.google.com') || cur.includes('consent') || cur.includes('signin')) {
+      console.warn(`[${INSTANCE}] Redirected to sign-in/consent page.`);
       return false;
     }
+
+    // wait a bit for client app to initialize
+    await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(()=>{});
+    await page.waitForTimeout(2500);
+
+    // if EXPECTED_SELECTOR is provided, prefer that
+    if (EXPECTED_SELECTOR) {
+      try {
+        await page.waitForSelector(EXPECTED_SELECTOR, { timeout: 20000, state: 'visible' });
+        console.log(`[${INSTANCE}] Found expected selector: ${EXPECTED_SELECTOR}`);
+        return true;
+      } catch (e) {
+        console.warn(`[${INSTANCE}] Expected selector not found: ${EXPECTED_SELECTOR}`);
+        return false;
+      }
+    }
+
+    // Otherwise ensure modal/consent text is gone
+    const modalLocator = page.locator('text=This app is from another developer, text=Continue to the app');
+    if (await modalLocator.count() > 0) {
+      // if still present -> fail
+      console.warn(`[${INSTANCE}] Modal still present on page.`);
+      return false;
+    }
+
+    // fallback: check page has meaningful content (e.g., main app container)
+    const body = (await page.textContent('body')) || '';
+    if (!/sign in|this app is from another developer|continue to the app|consent|authorize/i.test(body)) {
+      console.log(`[${INSTANCE}] Body heuristic OK (no obvious sign-in/consent text).`);
+      return true;
+    }
+    return false;
+  } catch (e) {
+    console.warn(`[${INSTANCE}] verifyTarget error: ${e.message}`);
+    return false;
   }
+}
 
   // main flow
   const browser = await chromium.launch({
