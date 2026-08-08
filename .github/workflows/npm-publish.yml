@@ -5,10 +5,15 @@ on:
     - cron: '*/15 * * * *'
   workflow_dispatch:
 
+concurrency:
+  group: refresh-aistudio
+  cancel-in-progress: false
+
 jobs:
   visit:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    # must be >= KEEP_OPEN_MINUTES + margin; set enough so the job can "stay" open
+    timeout-minutes: 60
     strategy:
       matrix:
         instance: [1,2,3,4,5]
@@ -17,7 +22,9 @@ jobs:
       TARGET_URL: ${{ secrets.AI_STUDIO_URL }}
       GMAIL_USER_LIST: ${{ secrets.GMAIL_USER_LIST }}
       GMAIL_PASSWORD: ${{ secrets.GMAIL_PASSWORD }}
-      KEEP_OPEN_MINUTES: '15'
+      KEEP_OPEN_MINUTES: '15'            # default keep-open duration (minutes)
+      # Optional secret (base64) that workflow will decode into storageState.json
+      # GMAIL_STORAGE_STATE: ${{ secrets.GMAIL_STORAGE_STATE }}
 
     steps:
       - name: Checkout
@@ -28,24 +35,57 @@ jobs:
         with:
           node-version: '18'
 
-      - name: Install deps & Playwright browsers (npm ci -> fallback)
+      - name: Stagger start (random jitter to reduce simultaneous downloads)
         run: |
+          # Sleep a random 0-29 seconds to stagger matrix instances
+          jitter=$((RANDOM % 30))
+          echo "Sleeping for ${jitter}s to stagger instance ${{ matrix.instance }}"
+          sleep ${jitter}
+
+      - name: Install system deps, node deps & Playwright (with retries)
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+
+          retry() {
+            local -r -i max_attempts=5
+            local -i attempt_num=1
+            until "$@"; do
+              if (( attempt_num == max_attempts )); then
+                echo "Command failed after $attempt_num attempts."
+                return 1
+              fi
+              echo "Command failed. Attempt $attempt_num/$max_attempts:"
+              attempt_num=$(( attempt_num + 1 ))
+              sleep $(( attempt_num * 2 ))
+            done
+          }
+
+          echo "Installing apt packages (ffmpeg + libs) to avoid large Playwright downloads"
+          sudo apt-get update -y
+          sudo apt-get install -y ffmpeg libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
+            libxcomposite1 libxdamage1 libxrandr2 libxkbcommon0 libgbm1 libgtk-3-0 \
+            libpangocairo-1.0-0 libxss1 libasound2 || true
+
+          echo "Installing node modules (npm ci || npm install)"
           npm ci || npm install
-          npx playwright install --with-deps
+
+          echo "Installing Playwright browsers and deps (with retry)"
+          retry npx playwright install --with-deps
 
       - name: Decode storageState (optional)
+        if: ${{ secrets.GMAIL_STORAGE_STATE != '' }}
         run: |
-          if [ -n "${{ secrets.GMAIL_STORAGE_STATE }}" ]; then
-            printf "%s" "${{ secrets.GMAIL_STORAGE_STATE }}" | base64 --decode > storageState.json
-            ls -l storageState.json
-          else
-            echo "No GMAIL_STORAGE_STATE secret set."
-          fi
+          printf "%s" "${{ secrets.GMAIL_STORAGE_STATE }}" | base64 --decode > storageState.json
+          ls -l storageState.json
 
       - name: Run login + click (matrix instance)
-        run: node scripts/login-and-click.js
+        run: |
+          echo "Starting instance ${{ matrix.instance }}"
+          node scripts/login-and-click.js
         env:
           INSTANCE: ${{ matrix.instance }}
+          # TARGET_URL, GMAIL_USER_LIST, GMAIL_PASSWORD, KEEP_OPEN_MINUTES already in job env
 
       - name: Upload screenshots & debug artifacts
         if: always()
