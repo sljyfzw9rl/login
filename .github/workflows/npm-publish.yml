@@ -2,7 +2,7 @@ name: Refresh AI Studio app (every 15 minutes)
 
 on:
   schedule:
-    - cron: '*/15 * * * *'   # tiap 15 menit
+    - cron: '*/15 * * * *'
   workflow_dispatch:
 
 jobs:
@@ -17,7 +17,6 @@ jobs:
       TARGET_URL: ${{ secrets.AI_STUDIO_URL }}
       GMAIL_USERNAME: ${{ secrets.GMAIL_USERNAME }}
       GMAIL_PASSWORD: ${{ secrets.GMAIL_PASSWORD }}
-      GMAIL_STORAGE_STATE: ${{ secrets.GMAIL_STORAGE_STATE }}
 
     steps:
       - name: Checkout
@@ -28,16 +27,16 @@ jobs:
         with:
           node-version: '18'
 
-      - name: Install deps & Playwright browsers
+      - name: Install deps & Playwright browsers (npm ci -> fallback to npm install)
         run: |
-          npm ci
+          npm ci || npm install
           npx playwright install --with-deps
 
       - name: Create storageState file from secret (optional)
-        if: env.GMAIL_STORAGE_STATE != ''
+        if: ${{ secrets.GMAIL_STORAGE_STATE }}
         run: |
           echo "Decoding GMAIL_STORAGE_STATE secret to storageState.json"
-          printf "%s" "$GMAIL_STORAGE_STATE" | base64 --decode > storageState.json
+          printf "%s" "${{ secrets.GMAIL_STORAGE_STATE }}" | base64 --decode > storageState.json
           ls -l storageState.json
 
       - name: Run login + click (matrix instance)
