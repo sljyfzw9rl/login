@@ -73,12 +73,6 @@ jobs:
           echo "Installing Playwright browsers and deps (with retry)"
           retry npx playwright install --with-deps
 
-      - name: Decode storageState (optional)
-        if: ${{ secrets.GMAIL_STORAGE_STATE != '' }}
-        run: |
-          printf "%s" "${{ secrets.GMAIL_STORAGE_STATE }}" | base64 --decode > storageState.json
-          ls -l storageState.json
-
       - name: Run login + click (matrix instance)
         run: |
           echo "Starting instance ${{ matrix.instance }}"
