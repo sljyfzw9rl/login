@@ -15,8 +15,9 @@ jobs:
 
     env:
       TARGET_URL: ${{ secrets.AI_STUDIO_URL }}
-      GMAIL_USERNAME: ${{ secrets.GMAIL_USERNAME }}
+      GMAIL_USER_LIST: ${{ secrets.GMAIL_USER_LIST }}
       GMAIL_PASSWORD: ${{ secrets.GMAIL_PASSWORD }}
+      KEEP_OPEN_MINUTES: '15'
 
     steps:
       - name: Checkout
