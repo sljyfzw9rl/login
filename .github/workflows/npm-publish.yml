@@ -12,38 +12,38 @@ concurrency:
 jobs:
   visit:
     runs-on: ubuntu-latest
-    # must be >= KEEP_OPEN_MINUTES + margin; set enough so the job can "stay" open
-    timeout-minutes: 60
+    # Ensure timeout >= KEEP_OPEN_MINUTES + margin
+    timeout-minutes: 90
+
     strategy:
       matrix:
         instance: [1,2,3,4,5]
+      # limit parallelism to reduce chance of preemption/cancel
+      max-parallel: 1
 
     env:
       TARGET_URL: ${{ secrets.AI_STUDIO_URL }}
       GMAIL_USER_LIST: ${{ secrets.GMAIL_USER_LIST }}
       GMAIL_PASSWORD: ${{ secrets.GMAIL_PASSWORD }}
-      KEEP_OPEN_MINUTES: '15'            # default keep-open duration (minutes)
-      # Optional secret (base64) that workflow will decode into storageState.json
-      # GMAIL_STORAGE_STATE: ${{ secrets.GMAIL_STORAGE_STATE }}
+      KEEP_OPEN_MINUTES: '15'
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Cache node modules
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: node-modules-${{ hashFiles('**/package-lock.json') }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '18'
 
-      - name: Stagger start (random jitter to reduce simultaneous downloads)
-        run: |
-          # Sleep a random 0-29 seconds to stagger matrix instances
-          jitter=$((RANDOM % 30))
-          echo "Sleeping for ${jitter}s to stagger instance ${{ matrix.instance }}"
-          sleep ${jitter}
-
       - name: Install system deps, node deps & Playwright (with retries)
-        timeout-minutes: 20
+        timeout-minutes: 25
         run: |
           set -euo pipefail
 
@@ -59,3 +59,34 @@ jobs:
               attempt_num=$(( attempt_num + 1 ))
               sleep $(( attempt_num * 2 ))
             done
+          }
+
+          echo "Installing apt packages (ffmpeg + libs) to avoid large Playwright downloads"
+          sudo apt-get update -y
+          sudo apt-get install -y ffmpeg libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
+            libxcomposite1 libxdamage1 libxrandr2 libxkbcommon0 libgbm1 libgtk-3-0 \
+            libpangocairo-1.0-0 libxss1 libasound2 || true
+
+          echo "Installing node modules (npm ci || npm install)"
+          npm ci || npm install
+
+          echo "Installing Playwright browsers and deps (with retry)"
+          retry npx playwright install --with-deps
+
+      - name: Run login + click (matrix instance)
+        run: |
+          echo "Starting instance ${{ matrix.instance }}"
+          node scripts/login-and-click.js
+        env:
+          INSTANCE: ${{ matrix.instance }}
+
+      - name: Upload screenshots & debug artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-instance-${{ matrix.instance }}
+          path: |
+            opened-${{ matrix.instance }}-*.png
+            debug-${{ matrix.instance }}-*.png
+            debug-${{ matrix.instance }}-*.html
+            debug-${{ matrix.instance }}-cookies.json
