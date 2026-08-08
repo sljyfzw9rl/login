@@ -1,0 +1,6 @@
+# Ignore node_modules and Playwright browsers
+node_modules/
+.playwright/
+storageState.json
+state.json
+*.png
