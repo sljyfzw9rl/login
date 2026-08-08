@@ -32,13 +32,6 @@ jobs:
           npm ci || npm install
           npx playwright install --with-deps
 
-      - name: Create storageState file from secret (optional)
-        if: ${{ secrets.GMAIL_STORAGE_STATE }}
-        run: |
-          echo "Decoding GMAIL_STORAGE_STATE secret to storageState.json"
-          printf "%s" "${{ secrets.GMAIL_STORAGE_STATE }}" | base64 --decode > storageState.json
-          ls -l storageState.json
-
       - name: Run login + click (matrix instance)
         run: node scripts/login-and-click.js
         env:
