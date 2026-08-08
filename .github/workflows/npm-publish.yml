@@ -1,0 +1,52 @@
+name: Refresh AI Studio app (every 15 minutes)
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'   # tiap 15 menit
+  workflow_dispatch:
+
+jobs:
+  visit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        instance: [1,2,3,4,5]
+
+    env:
+      TARGET_URL: ${{ secrets.AI_STUDIO_URL }}
+      GMAIL_USERNAME: ${{ secrets.GMAIL_USERNAME }}
+      GMAIL_PASSWORD: ${{ secrets.GMAIL_PASSWORD }}
+      GMAIL_STORAGE_STATE: ${{ secrets.GMAIL_STORAGE_STATE }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install deps & Playwright browsers
+        run: |
+          npm ci
+          npx playwright install --with-deps
+
+      - name: Create storageState file from secret (optional)
+        if: env.GMAIL_STORAGE_STATE != ''
+        run: |
+          echo "Decoding GMAIL_STORAGE_STATE secret to storageState.json"
+          printf "%s" "$GMAIL_STORAGE_STATE" | base64 --decode > storageState.json
+          ls -l storageState.json
+
+      - name: Run login + click (matrix instance)
+        run: node scripts/login-and-click.js
+        env:
+          INSTANCE: ${{ matrix.instance }}
+
+      - name: Upload screenshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshot-${{ matrix.instance }}
+          path: opened-${{ matrix.instance }}-*.png
