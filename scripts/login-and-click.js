@@ -28,13 +28,6 @@ function parseList(value) {
     .filter(Boolean);
 }
 
-/**
- * Format:
- * email@example.com:password
- *
- * Pemisah yang digunakan adalah tanda ":" pertama.
- * Jadi password tetap bisa mengandung ":" setelah pemisah pertama.
- */
 function parseAccounts(value) {
   return String(value || '')
     .split(/\r?\n/)
@@ -50,13 +43,8 @@ function parseAccounts(value) {
         );
       }
 
-      const email = line
-        .slice(0, separatorIndex)
-        .trim();
-
-      const password = line
-        .slice(separatorIndex + 1)
-        .trim();
+      const email = line.slice(0, separatorIndex).trim();
+      const password = line.slice(separatorIndex + 1).trim();
 
       if (!email || !password) {
         throw new Error(
@@ -78,7 +66,7 @@ function sleep(ms) {
     const timer = setInterval(() => {
       if (abortRequested) {
         clearInterval(timer);
-        reject(new Error('Sleep dihentikan karena proses menerima signal.'));
+        reject(new Error('Sleep dihentikan karena signal proses.'));
         return;
       }
 
@@ -125,40 +113,30 @@ async function safeScreenshot(page, filePath) {
     process.env.AI_STUDIO_URL
   );
 
-  const account = accounts[emailIndex - 1];
-
-  if (!account) {
+  if (accounts.length === 0) {
     throw new Error(
-      `Akun dengan index ${emailIndex} tidak ditemukan. ` +
-      `Jumlah akun yang tersedia: ${accounts.length}.`
+      'GMAIL_ACCOUNT_LIST kosong.'
     );
   }
 
   if (urls.length === 0) {
     throw new Error(
-      'AI_STUDIO_URL kosong. Isi minimal satu URL.'
+      'AI_STUDIO_URL kosong.'
     );
   }
 
-  if (urls.length < 5) {
-    console.warn(
-      `Peringatan: hanya ditemukan ${urls.length} URL. ` +
-      'Lima tab akan tetap dibuat berdasarkan URL yang tersedia.'
+  const account = accounts[emailIndex - 1];
+
+  if (!account) {
+    throw new Error(
+      `Akun dengan index ${emailIndex} tidak ditemukan. ` +
+      `Total akun: ${accounts.length}.`
     );
   }
 
   /*
-   * Tepat lima tab.
-   *
-   * Jika tersedia lima URL:
-   * tab 1 -> URL 1
-   * tab 2 -> URL 2
-   * tab 3 -> URL 3
-   * tab 4 -> URL 4
-   * tab 5 -> URL 5
-   *
-   * Jika URL kurang dari lima, URL yang tersedia akan diulang
-   * sampai jumlah tab menjadi lima.
+   * Satu job menggunakan satu email dan lima URL.
+   * Jika lima URL tersedia, setiap tab menggunakan satu URL.
    */
   const targetUrls = Array.from(
     { length: 5 },
@@ -166,10 +144,12 @@ async function safeScreenshot(page, filePath) {
   );
 
   console.log('========================================');
-  console.log(`Job email index : ${emailIndex}`);
+  console.log(`Email index     : ${emailIndex}`);
   console.log(`Email           : ${account.email}`);
+  console.log(`Jumlah akun     : ${accounts.length}`);
+  console.log(`Jumlah URL      : ${urls.length}`);
   console.log(`Jumlah tab      : ${targetUrls.length}`);
-  console.log(`Durasi          : ${keepOpenMinutes} menit`);
+  console.log(`Durasi aktif    : ${keepOpenMinutes} menit`);
   console.log(`Interval reload : ${reloadIntervalMinutes} menit`);
   console.log('========================================');
 
@@ -260,13 +240,12 @@ async function safeScreenshot(page, filePath) {
           });
 
           console.log(
-            `[email:${emailIndex}][tab:${tabIndex}] ` +
-            `Klik teks: ${value}`
+            `[email:${emailIndex}][tab:${tabIndex}] Klik: ${value}`
           );
 
           return true;
         } catch (error) {
-          // Coba frame atau selector berikutnya.
+          // Coba frame berikutnya.
         }
       }
     }
@@ -300,11 +279,13 @@ async function safeScreenshot(page, filePath) {
   }
 
   async function loginGoogle() {
+    const loginPage = pages[0];
+
     console.log(
-      `[email:${emailIndex}] Membuka halaman login Google satu kali.`
+      `[email:${emailIndex}] Membuka halaman login Google.`
     );
 
-    await pages[0].goto(
+    await loginPage.goto(
       'https://accounts.google.com/signin/v2/identifier',
       {
         waitUntil: 'domcontentloaded',
@@ -312,7 +293,7 @@ async function safeScreenshot(page, filePath) {
       }
     );
 
-    const emailInput = pages[0]
+    const emailInput = loginPage
       .locator('#identifierId, input[type="email"]')
       .first();
 
@@ -323,14 +304,14 @@ async function safeScreenshot(page, filePath) {
 
     await emailInput.fill(account.email);
 
-    await pages[0]
+    await loginPage
       .locator('#identifierNext')
       .click()
       .catch(() => {});
 
-    await pages[0].waitForTimeout(2000);
+    await loginPage.waitForTimeout(2000);
 
-    const passwordInput = pages[0]
+    const passwordInput = loginPage
       .locator('input[type="password"]')
       .first();
 
@@ -341,14 +322,14 @@ async function safeScreenshot(page, filePath) {
 
     await passwordInput.fill(account.password);
 
-    await pages[0]
+    await loginPage
       .locator('#passwordNext')
       .click()
       .catch(() => {});
 
-    await pages[0].waitForTimeout(5000);
+    await loginPage.waitForTimeout(5000);
 
-    const currentUrl = pages[0].url();
+    const currentUrl = loginPage.url();
 
     if (
       /challenge|verify|signin/i.test(currentUrl)
@@ -359,11 +340,11 @@ async function safeScreenshot(page, filePath) {
     }
 
     console.log(
-      `[email:${emailIndex}] Login Google selesai atau sesi sudah diterima.`
+      `[email:${emailIndex}] Login selesai.`
     );
   }
 
-  async function openTab(page, targetUrl, tabIndex) {
+  async function openTarget(page, targetUrl, tabIndex) {
     console.log(
       `[email:${emailIndex}][tab:${tabIndex}] ` +
       `Membuka ${targetUrl}`
@@ -411,7 +392,7 @@ async function safeScreenshot(page, filePath) {
     try {
       console.log(
         `[email:${emailIndex}][tab:${tabIndex}] ` +
-        `Reload halaman pada ${now()}`
+        `Reload pada ${now()}`
       );
 
       await page.reload({
@@ -426,22 +407,18 @@ async function safeScreenshot(page, filePath) {
         tabIndex
       );
 
-      const valid = await isPageValid(page);
-
-      if (!valid) {
+      if (!(await isPageValid(page))) {
         console.warn(
           `[email:${emailIndex}][tab:${tabIndex}] ` +
-          'Halaman tidak valid setelah reload. Membuka ulang.'
+          'Halaman invalid setelah reload. Membuka ulang.'
         );
 
-        await openTab(
+        await openTarget(
           page,
           targetUrl,
           tabIndex
         );
       }
-
-      return true;
     } catch (error) {
       console.warn(
         `[email:${emailIndex}][tab:${tabIndex}] ` +
@@ -449,13 +426,11 @@ async function safeScreenshot(page, filePath) {
       );
 
       try {
-        await openTab(
+        await openTarget(
           page,
           targetUrl,
           tabIndex
         );
-
-        return true;
       } catch (reopenError) {
         console.error(
           `[email:${emailIndex}][tab:${tabIndex}] ` +
@@ -467,19 +442,18 @@ async function safeScreenshot(page, filePath) {
           tabIndex,
           'reload-failed'
         );
-
-        return false;
       }
     }
   }
 
   try {
     /*
-     * Buat lima page/tab dalam satu browser context.
-     * Semua tab memakai sesi login email yang sama.
+     * Buat lima tab dalam satu browser context.
+     * Semua tab memakai session/cookies yang sama.
      */
     for (let index = 0; index < 5; index += 1) {
       const page = await context.newPage();
+
       pages.push(page);
 
       page.on('console', (message) => {
@@ -498,23 +472,21 @@ async function safeScreenshot(page, filePath) {
     }
 
     /*
-     * Login dilakukan sekali pada tab pertama.
-     * Cookies/session otomatis tersedia untuk tab lain
-     * karena semuanya memakai context yang sama.
+     * Login hanya dilakukan satu kali menggunakan tab pertama.
      */
     await loginGoogle();
 
     /*
-     * Buka lima URL.
-     * Tab pertama sudah berada di halaman Google setelah login,
-     * sehingga diarahkan ke URL pertama.
+     * Setelah login, kelima tab dibuka.
+     * Semua menggunakan context yang sama sehingga
+     * cookies/session email yang sama tersedia di semua tab.
      */
     for (let index = 0; index < pages.length; index += 1) {
       const tabIndex = index + 1;
       const page = pages[index];
       const targetUrl = targetUrls[index];
 
-      await openTab(
+      await openTarget(
         page,
         targetUrl,
         tabIndex
@@ -552,8 +524,8 @@ async function safeScreenshot(page, filePath) {
     );
 
     /*
-     * Semua lima tab tetap terbuka.
-     * Setiap 30 menit, kelima tab direload satu per satu.
+     * Lima tab tetap hidup.
+     * Setiap 30 menit semua tab direload.
      */
     while (
       !abortRequested &&
@@ -587,18 +559,17 @@ async function safeScreenshot(page, filePath) {
 
       if (Date.now() >= nextReloadAt) {
         console.log(
-          `[email:${emailIndex}] ` +
-          `Reload lima tab dimulai pada ${now()}`
+          `[email:${emailIndex}] Reload lima tab dimulai.`
         );
 
         for (let index = 0; index < pages.length; index += 1) {
-          const tabIndex = index + 1;
-          const page = pages[index];
-          const targetUrl = targetUrls[index];
-
           if (abortRequested) {
             break;
           }
+
+          const tabIndex = index + 1;
+          const page = pages[index];
+          const targetUrl = targetUrls[index];
 
           await reloadTab(
             page,
@@ -611,14 +582,13 @@ async function safeScreenshot(page, filePath) {
           Date.now() + reloadIntervalMinutes * 60 * 1000;
 
         console.log(
-          `[email:${emailIndex}] ` +
-          'Reload lima tab selesai.'
+          `[email:${emailIndex}] Reload lima tab selesai.`
         );
       }
     }
 
     console.log(
-      `[email:${emailIndex}] Sesi lima tab selesai pada ${now()}`
+      `[email:${emailIndex}] Sesi selesai pada ${now()}`
     );
   } catch (error) {
     console.error(
