@@ -1,39 +1,58 @@
-name: Keep AI Studio sessions alive - 25 matrix
+name: Keep AI Studio sessions alive
 
 on:
   schedule:
+    # GitHub Actions memakai UTC.
+    # Berjalan setiap 6 jam: 00:00, 06:00, 12:00, 18:00 UTC.
     - cron: '0 */6 * * *'
   workflow_dispatch:
 
 concurrency:
-  group: ai-studio-25-matrix
+  group: ai-studio-five-email-jobs
   cancel-in-progress: false
 
 jobs:
   visit:
     runs-on: ubuntu-latest
+
+    # Runner berjalan maksimal 6 jam.
+    # Script memakai 350 menit agar ada waktu cleanup.
     timeout-minutes: 360
 
     strategy:
       fail-fast: false
+
+      # Hanya 5 job.
+      # Setiap job menggunakan satu email dan membuka lima tab.
       matrix:
         email_index: [1, 2, 3, 4, 5]
-        url_index: [1, 2, 3, 4, 5]
-      max-parallel: 25
+
+      # Lima job berjalan bersamaan.
+      max-parallel: 5
 
     env:
+      # Format:
+      # email1:password1
+      # email2:password2
+      # email3:password3
+      # email4:password4
+      # email5:password5
       GMAIL_ACCOUNT_LIST: ${{ secrets.GMAIL_ACCOUNT_LIST }}
-      AI_STUDIO_URL: ${{ secrets.AI_STUDIO_URL }}
-      GMAIL_STORAGE_STATE: ${{ secrets.GMAIL_STORAGE_STATE }}
 
+      # Lima URL, dipisahkan koma atau baris baru.
+      AI_STUDIO_URL: ${{ secrets.AI_STUDIO_URL }}
+
+      # Durasi browser tetap terbuka.
       KEEP_OPEN_MINUTES: '350'
+
+      # Semua tab direload setiap 30 menit.
       RELOAD_INTERVAL_MINUTES: '30'
 
+      # Email yang dipakai job ini.
       EMAIL_INDEX: ${{ matrix.email_index }}
-      URL_INDEX: ${{ matrix.url_index }}
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Node.js
@@ -47,24 +66,17 @@ jobs:
           npm ci || npm install
           npx playwright install --with-deps chromium
 
-      - name: Restore Playwright storage state
-        if: ${{ env.GMAIL_STORAGE_STATE != '' }}
-        shell: bash
-        run: |
-          printf '%s' "$GMAIL_STORAGE_STATE" | base64 --decode > storageState.json
-          test -s storageState.json
-
-      - name: Run AI Studio browser session
+      - name: Run one email with five tabs
         run: node scripts/login-and-click.js
 
-      - name: Upload artifacts
+      - name: Upload screenshots and debug artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: artifacts-email-${{ matrix.email_index }}-url-${{ matrix.url_index }}
+          name: artifacts-email-${{ matrix.email_index }}
           if-no-files-found: ignore
           path: |
-            opened-email-${{ matrix.email_index }}-url-${{ matrix.url_index }}-*.png
-            debug-email-${{ matrix.email_index }}-url-${{ matrix.url_index }}-*.png
-            debug-email-${{ matrix.email_index }}-url-${{ matrix.url_index }}-*.html
-            debug-email-${{ matrix.email_index }}-url-${{ matrix.url_index }}-*.json
+            opened-email-${{ matrix.email_index }}-url-*.png
+            debug-email-${{ matrix.email_index }}-url-*.png
+            debug-email-${{ matrix.email_index }}-url-*.html
+            debug-email-${{ matrix.email_index }}-url-*-cookies.json
