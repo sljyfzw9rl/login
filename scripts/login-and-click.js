@@ -66,7 +66,7 @@ function sleep(ms) {
     const timer = setInterval(() => {
       if (stopRequested) {
         clearInterval(timer);
-        reject(new Error('Proses dihentikan.'));
+        reject(new Error('Proses dihentikan oleh signal.'));
         return;
       }
 
@@ -79,7 +79,7 @@ function sleep(ms) {
 }
 
 function ignoredRequest(url) {
-  return /google-analytics|analytics\.google|doubleclick|googletagmanager|csp\.withgoogle\.com|play\.google\.com\/log|\/ccm\/collect|directaccessweb-pa\.googleapis\.com\/webrtc/i
+  return /google-analytics|analytics\.google|doubleclick|googletagmanager|csp\.withgoogle\.com|play\.google\.com\/log|\/ccm\/collect|directaccessweb-pa\.googleapis\.com\/webrtc|www\.google\.com\/images\/cleardot\.gif/i
     .test(url || '');
 }
 
@@ -113,7 +113,7 @@ async function saveDebug(page, emailIndex, urlIndex, label) {
 
   try {
     await fs.promises.writeFile(
-      `${prefix}-url.txt`,
+      `${prefix}.url.txt`,
       page.url()
     );
   } catch (error) {
@@ -148,11 +148,11 @@ async function clickText(page, labels, prefix) {
         }
 
         await locator.click({ timeout: 5000 });
-
         console.log(`${prefix} Klik: ${label}`);
+
         return true;
       } catch {
-        // coba frame/label berikutnya
+        // lanjut ke frame/label lain
       }
     }
   }
@@ -189,7 +189,7 @@ async function clickTwoStepLater(page, prefix) {
           await page.waitForTimeout(8000);
           return true;
         } catch {
-          // coba lagi
+          // retry
         }
       }
     }
@@ -230,9 +230,6 @@ async function waitForGoogleLogin(page, emailIndex, urlIndex) {
       throw new Error('Login dihentikan.');
     }
 
-    /*
-     * Coba tutup dialog pengingat 2 langkah jika muncul.
-     */
     await clickTwoStepLater(page, `[email:${emailIndex}][url:${urlIndex}]`);
 
     const url = page.url();
@@ -269,9 +266,6 @@ async function waitForGoogleLogin(page, emailIndex, urlIndex) {
       continue;
     }
 
-    /*
-     * Setelah form login hilang, beri waktu agar redirect/cookies stabil.
-     */
     await page.waitForTimeout(10000);
 
     const finalUrl = page.url();
@@ -411,55 +405,45 @@ async function loginOnceAndSaveState({
       0
     );
 
+    /*
+     * Bootstrapping AI Studio sebelum simpan state.
+     * Ini penting agar token/state AI Studio juga ikut terbentuk.
+     */
+    await page.goto(
+      'https://aistudio.google.com/',
+      {
+        waitUntil: 'domcontentloaded',
+        timeout: 60000
+      }
+    );
+
+    await page.waitForTimeout(15000);
+
+    await clickText(
+      page,
+      [
+        'Continue to the app',
+        'Continue',
+        'Lanjutkan ke aplikasi',
+        'Lanjutkan'
+      ],
+      `[email:${emailIndex}]`
+    );
+
+    await page.waitForTimeout(10000);
+
     await context.storageState({
       path: statePath
     });
 
     console.log(
-      `[email:${emailIndex}] Session disimpan: ${statePath}`
+      `[email:${emailIndex}] State Google + AI Studio disimpan: ${statePath}`
     );
 
     return;
   } finally {
     await context.close().catch(() => {});
   }
-}
-
-async function openTarget(page, targetUrl, prefix) {
-  console.log(`${prefix} Membuka target: ${targetUrl}`);
-
-  await page.goto(targetUrl, {
-    waitUntil: 'domcontentloaded',
-    timeout: 60000
-  });
-
-  await page.waitForTimeout(15000);
-
-  await clickText(
-    page,
-    [
-      'Continue to the app',
-      'Continue',
-      'Lanjutkan ke aplikasi',
-      'Lanjutkan'
-    ],
-    prefix
-  );
-
-  await page.waitForTimeout(2500);
-
-  await clickText(
-    page,
-    [
-      'Skip tutorial',
-      'Skip tour',
-      'Skip',
-      'Lewati'
-    ],
-    prefix
-  );
-
-  await page.waitForTimeout(5000);
 }
 
 async function isTargetValid(page) {
@@ -501,14 +485,48 @@ async function isTargetValid(page) {
     }
   }
 
-  /*
-   * Hanya URL AI Studio yang valid.
-   */
-  if (!/^https:\/\/aistudio\.google\.com\//i.test(currentUrl)) {
+  if (!/^https:\/\/aistudio\.google\.com\/apps\//i.test(currentUrl)) {
     return false;
   }
 
   return true;
+}
+
+async function openTarget(page, targetUrl, prefix) {
+  console.log(`${prefix} Membuka target: ${targetUrl}`);
+
+  await page.goto(targetUrl, {
+    waitUntil: 'domcontentloaded',
+    timeout: 60000
+  });
+
+  await page.waitForTimeout(15000);
+
+  await clickText(
+    page,
+    [
+      'Continue to the app',
+      'Continue',
+      'Lanjutkan ke aplikasi',
+      'Lanjutkan'
+    ],
+    prefix
+  );
+
+  await page.waitForTimeout(2500);
+
+  await clickText(
+    page,
+    [
+      'Skip tutorial',
+      'Skip tour',
+      'Skip',
+      'Lewati'
+    ],
+    prefix
+  );
+
+  await page.waitForTimeout(5000);
 }
 
 async function runIsolatedSession({
@@ -538,6 +556,13 @@ async function runIsolatedSession({
   });
 
   const page = await context.newPage();
+
+  const coreApiStats = {
+    auth401: 0,
+    auth403: 0,
+    auth429: 0,
+    success: 0
+  };
 
   page.on('console', (message) => {
     const text = message.text();
@@ -570,17 +595,32 @@ async function runIsolatedSession({
     const status = response.status();
     const responseUrl = response.url();
 
-    if (![401, 403, 429].includes(status)) {
+    if (!responseUrl.includes('alkalimakersuite-pa.clients6.google.com')) {
       return;
     }
 
-    if (ignoredRequest(responseUrl)) {
+    if (!responseUrl.includes('MakerSuiteService')) {
       return;
     }
 
-    console.warn(
-      `${prefix} HTTP ${status}: ${response.request().method()} ${responseUrl.slice(0, 500)}`
-    );
+    if (status === 401) {
+      coreApiStats.auth401 += 1;
+      console.warn(`${prefix} HTTP 401: ${responseUrl}`);
+    }
+
+    if (status === 403) {
+      coreApiStats.auth403 += 1;
+      console.warn(`${prefix} HTTP 403: ${responseUrl}`);
+    }
+
+    if (status === 429) {
+      coreApiStats.auth429 += 1;
+      console.warn(`${prefix} HTTP 429: ${responseUrl}`);
+    }
+
+    if (status >= 200 && status < 300) {
+      coreApiStats.success += 1;
+    }
   });
 
   try {
@@ -596,6 +636,23 @@ async function runIsolatedSession({
       console.warn(`${prefix} Halaman belum valid atau kembali ke login.`);
     } else {
       console.log(`${prefix} Context terisolasi aktif.`);
+    }
+
+    if (
+      coreApiStats.auth401 > 0 ||
+      coreApiStats.auth403 > 0 ||
+      coreApiStats.auth429 > 0
+    ) {
+      console.warn(
+        `${prefix} Core API AI Studio gagal: ` +
+        `401=${coreApiStats.auth401}, ` +
+        `403=${coreApiStats.auth403}, ` +
+        `429=${coreApiStats.auth429}`
+      );
+    } else {
+      console.log(
+        `${prefix} Core API AI Studio merespons normal.`
+      );
     }
 
     await safeScreenshot(
@@ -667,7 +724,6 @@ async function runIsolatedSession({
           );
         } catch (error) {
           console.warn(`${prefix} Reload gagal: ${error.message}`);
-
           await saveDebug(page, emailIndex, urlIndex, 'reload-error');
         }
 
@@ -761,7 +817,7 @@ async function runIsolatedSession({
     );
 
     console.log(
-      `TOTAL_ISOLATED_SESSIONS=5`
+      'TOTAL_ISOLATED_SESSIONS=5'
     );
 
     await Promise.all(
