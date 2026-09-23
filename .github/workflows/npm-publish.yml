@@ -1,90 +1,76 @@
-name: Refresh AI Studio app (every 15 minutes)
+name: Keep AI Studio sessions alive
 
 on:
   schedule:
-    - cron: '*/15 * * * *'
+    # GitHub Actions menggunakan UTC.
+    # Jalan setiap 6 jam: 00:00, 06:00, 12:00, 18:00 UTC.
+    - cron: '0 */6 * * *'
   workflow_dispatch:
 
 concurrency:
-  group: refresh-aistudio
+  group: ai-studio-keepalive
   cancel-in-progress: false
 
 jobs:
   visit:
     runs-on: ubuntu-latest
-    # Ensure timeout >= KEEP_OPEN_MINUTES + margin
-    timeout-minutes: 90
+
+    # Maksimal 6 jam. Browser disetel 350 menit agar ada waktu cleanup.
+    timeout-minutes: 360
 
     strategy:
+      fail-fast: false
       matrix:
-        instance: [1,2,3,4,5]
-      # limit parallelism to reduce chance of preemption/cancel
-      max-parallel: 1
+        # Instance 1 menggunakan URL 1, instance 2 menggunakan URL 2, dst.
+        instance: [1, 2, 3, 4, 5]
+      max-parallel: 5
 
     env:
-      TARGET_URL: ${{ secrets.AI_STUDIO_URL }}
+      AI_STUDIO_URL: ${{ secrets.AI_STUDIO_URL }}
       GMAIL_USER_LIST: ${{ secrets.GMAIL_USER_LIST }}
+      GMAIL_USERNAME: ${{ secrets.GMAIL_USERNAME }}
       GMAIL_PASSWORD: ${{ secrets.GMAIL_PASSWORD }}
-      KEEP_OPEN_MINUTES: '15'
+      GMAIL_STORAGE_STATE: ${{ secrets.GMAIL_STORAGE_STATE }}
+
+      # 350 menit = 5 jam 50 menit.
+      KEEP_OPEN_MINUTES: '350'
+
+      # Reload halaman setiap 30 menit.
+      RELOAD_INTERVAL_MINUTES: '30'
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Cache node modules
-        uses: actions/cache@v4
-        with:
-          path: ~/.npm
-          key: node-modules-${{ hashFiles('**/package-lock.json') }}
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '20'
+          cache: npm
 
-      - name: Install system deps, node deps & Playwright (with retries)
-        timeout-minutes: 25
+      - name: Install dependencies
         run: |
-          set -euo pipefail
-
-          retry() {
-            local -r -i max_attempts=5
-            local -i attempt_num=1
-            until "$@"; do
-              if (( attempt_num == max_attempts )); then
-                echo "Command failed after $attempt_num attempts."
-                return 1
-              fi
-              echo "Command failed. Attempt $attempt_num/$max_attempts:"
-              attempt_num=$(( attempt_num + 1 ))
-              sleep $(( attempt_num * 2 ))
-            done
-          }
-
-          echo "Installing apt packages (ffmpeg + libs) to avoid large Playwright downloads"
-          sudo apt-get update -y
-          sudo apt-get install -y ffmpeg libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
-            libxcomposite1 libxdamage1 libxrandr2 libxkbcommon0 libgbm1 libgtk-3-0 \
-            libpangocairo-1.0-0 libxss1 libasound2 || true
-
-          echo "Installing node modules (npm ci || npm install)"
           npm ci || npm install
+          npx playwright install --with-deps chromium
 
-          echo "Installing Playwright browsers and deps (with retry)"
-          retry npx playwright install --with-deps
-
-      - name: Run login + click (matrix instance)
+      - name: Restore Playwright storage state
+        if: ${{ env.GMAIL_STORAGE_STATE != '' }}
+        shell: bash
         run: |
-          echo "Starting instance ${{ matrix.instance }}"
-          node scripts/login-and-click.js
+          printf '%s' "$GMAIL_STORAGE_STATE" | base64 --decode > storageState.json
+          test -s storageState.json
+
+      - name: Run browser keepalive
         env:
           INSTANCE: ${{ matrix.instance }}
+        run: node scripts/login-and-click.js
 
-      - name: Upload screenshots & debug artifacts
+      - name: Upload screenshots and debug artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: artifacts-instance-${{ matrix.instance }}
+          if-no-files-found: ignore
           path: |
             opened-${{ matrix.instance }}-*.png
             debug-${{ matrix.instance }}-*.png
