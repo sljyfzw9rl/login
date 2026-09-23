@@ -66,7 +66,7 @@ function sleep(ms) {
     const timer = setInterval(() => {
       if (stopRequested) {
         clearInterval(timer);
-        reject(new Error('Proses dihentikan oleh signal.'));
+        reject(new Error('Proses dihentikan.'));
         return;
       }
 
@@ -143,16 +143,13 @@ async function clickText(page, labels, prefix) {
           .isVisible({ timeout: 1500 })
           .catch(() => false);
 
-        if (!visible) {
-          continue;
-        }
+        if (!visible) continue;
 
         await locator.click({ timeout: 5000 });
         console.log(`${prefix} Klik: ${label}`);
-
         return true;
       } catch {
-        // lanjut ke frame/label lain
+        // coba frame/label berikutnya
       }
     }
   }
@@ -180,9 +177,7 @@ async function clickTwoStepLater(page, prefix) {
             .isVisible({ timeout: 1000 })
             .catch(() => false);
 
-          if (!visible) {
-            continue;
-          }
+          if (!visible) continue;
 
           await locator.click({ timeout: 5000 });
           console.log(`${prefix} Klik: ${label}`);
@@ -406,11 +401,13 @@ async function loginOnceAndSaveState({
     );
 
     /*
-     * Bootstrapping AI Studio sebelum simpan state.
-     * Ini penting agar token/state AI Studio juga ikut terbentuk.
+     * Bootstrap AI Studio sebelum state disimpan.
+     * Tujuan: agar token AI Studio ikut terbentuk.
      */
+    const bootstrapUrl = 'https://aistudio.google.com/';
+
     await page.goto(
-      'https://aistudio.google.com/',
+      bootstrapUrl,
       {
         waitUntil: 'domcontentloaded',
         timeout: 60000
@@ -634,24 +631,21 @@ async function runIsolatedSession({
     if (!valid) {
       await saveDebug(page, emailIndex, urlIndex, 'invalid');
       console.warn(`${prefix} Halaman belum valid atau kembali ke login.`);
-    } else {
-      console.log(`${prefix} Context terisolasi aktif.`);
     }
 
-    if (
-      coreApiStats.auth401 > 0 ||
-      coreApiStats.auth403 > 0 ||
-      coreApiStats.auth429 > 0
-    ) {
+    const isReady =
+      coreApiStats.auth401 === 0 &&
+      coreApiStats.auth403 === 0 &&
+      coreApiStats.auth429 === 0;
+
+    if (isReady) {
+      console.log(`${prefix} LIVE: URL valid dan Core API AI Studio responsif.`);
+    } else {
       console.warn(
-        `${prefix} Core API AI Studio gagal: ` +
+        `${prefix} NOT_READY: ` +
         `401=${coreApiStats.auth401}, ` +
         `403=${coreApiStats.auth403}, ` +
         `429=${coreApiStats.auth429}`
-      );
-    } else {
-      console.log(
-        `${prefix} Core API AI Studio merespons normal.`
       );
     }
 
