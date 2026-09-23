@@ -1,46 +1,126 @@
-# Gmail login + Continue-to-app automation
+# Gmail login + AI Studio keepalive
 
-This repository contains a GitHub Actions workflow and Playwright scripts to:
+Automation Playwright untuk:
 
-- log in to a Google account (either via stored Playwright storageState or username/password),
-- open a target AI Studio app URL,
-- click the "Continue to the app" button if it appears,
-- take a screenshot and upload it as an artifact.
+- Login ke Google.
+- Membuka beberapa URL AI Studio.
+- Menekan tombol `Continue to the app`.
+- Menekan tombol `Skip` jika tersedia.
+- Menjaga halaman tetap terbuka selama hampir 6 jam.
+- Reload halaman setiap 30 menit.
+- Membuka ulang halaman apabila reload gagal.
+- Menjalankan beberapa URL secara paralel.
 
-Files added
-- .github/workflows/refresh-every-15.yml — workflow that runs every 15 minutes and on manual dispatch. Uses a matrix of 5 instances.
-- package.json — Node project with Playwright dependency.
-- scripts/login-and-click.js — main automation script.
-- scripts/save-state.js — helper to save Playwright storageState locally (run locally, then encode/upload to Secrets).
-- images/matrix-5x5.svg — simple 5x5 dot matrix image.
+## Cara kerja
 
-Setup
-1. Push this branch and open a PR or merge to main.
-2. Add these repository secrets (Settings → Secrets and variables → Actions):
-   - GMAIL_USERNAME — your Google email (only if you will use username/password login).
-   - GMAIL_PASSWORD — your Google password (only if you will use username/password login).
-   - AI_STUDIO_URL — the target URL, e.g. https://ai.studio/apps/0ca3bf1d-8647-4aac-aa20-10ebbb576614
-   - (Optional) GMAIL_STORAGE_STATE — base64 of Playwright storage state JSON (for stable authenticated runs). See below how to produce it.
+Workflow dijalankan setiap 6 jam menggunakan cron UTC:
 
-How to produce GMAIL_STORAGE_STATE (recommended for reliability)
-1. On your local machine with Node & Playwright installed, run:
-   npm ci
-   npx playwright install
-   node scripts/save-state.js
+```text
+0 */6 * * *
+```
 
-2. A visible browser will open. Log in to Google interactively.
-3. After login, go back to the terminal and press ENTER. A file `state.json` will be created.
-4. Encode it and copy to the secret:
-   - macOS / Linux:
-     cat state.json | base64 --wrap=0
-   - Windows PowerShell:
-     [Convert]::ToBase64String([IO.File]::ReadAllBytes("state.json"))
+Setiap workflow menjalankan lima instance:
 
-5. Create a repository secret named `GMAIL_STORAGE_STATE` and paste the base64 string.
+- Instance 1 menggunakan URL pertama.
+- Instance 2 menggunakan URL kedua.
+- Instance 3 menggunakan URL ketiga.
+- Instance 4 menggunakan URL keempat.
+- Instance 5 menggunakan URL kelima.
 
-Notes & caveats
-- Automated Google UI login (username/password) is brittle — Google may challenge or block automated sign-in. Using storageState is more reliable but can still fail if Google invalidates the session.
-- GitHub runners are ephemeral. Each job runs, then stops; it will not "stay" on the page between runs. The workflow runs every 15 minutes and will start fresh browser sessions each time.
-- Be careful with storing passwords in secrets. Prefer app-specific accounts or storageState.
+Browser tetap terbuka selama 350 menit. Setelah itu browser ditutup agar tidak melewati batas waktu runner GitHub Actions enam jam.
 
-If you want, I can open a Pull Request with these changes to `main` — tell me to push and open the PR and I'll do it.
+## Secret yang diperlukan
+
+Buka:
+
+```text
+Settings → Secrets and variables → Actions
+```
+
+Tambahkan secret berikut.
+
+### AI_STUDIO_URL
+
+Bisa menggunakan koma:
+
+```text
+https://url1,https://url2,https://url3,https://url4,https://url5
+```
+
+Atau menggunakan baris baru:
+
+```text
+https://url1
+https://url2
+https://url3
+https://url4
+https://url5
+```
+
+### GMAIL_USER_LIST
+
+Isi daftar email sesuai urutan URL:
+
+```text
+email1@gmail.com,email2@gmail.com,email3@gmail.com,email4@gmail.com,email5@gmail.com
+```
+
+Atau:
+
+```text
+email1@gmail.com
+email2@gmail.com
+email3@gmail.com
+email4@gmail.com
+email5@gmail.com
+```
+
+Pemetaan:
+
+```text
+URL 1 → email 1
+URL 2 → email 2
+URL 3 → email 3
+URL 4 → email 4
+URL 5 → email 5
+```
+
+### GMAIL_PASSWORD
+
+Password Gmail. Digunakan jika tidak memakai `GMAIL_STORAGE_STATE`.
+
+### GMAIL_STORAGE_STATE
+
+Base64 dari file Playwright storage state. Ini lebih direkomendasikan daripada login menggunakan username dan password setiap workflow.
+
+### GMAIL_USERNAME
+
+Opsional. Digunakan jika hanya ada satu akun Gmail.
+
+## Pengaturan durasi
+
+Pengaturan terdapat pada workflow:
+
+```yaml
+KEEP_OPEN_MINUTES: '350'
+RELOAD_INTERVAL_MINUTES: '30'
+```
+
+Artinya:
+
+- Browser hidup selama 350 menit.
+- Halaman reload setiap 30 menit.
+
+## Catatan GitHub Actions
+
+GitHub-hosted runner bersifat sementara. Halaman hanya akan tetap terbuka selama job berjalan. Ketika job selesai, browser dan runner akan dihentikan.
+
+Cron GitHub Actions menggunakan UTC dan bisa mengalami keterlambatan beberapa menit.
+
+## Menjalankan secara lokal
+
+```bash
+npm ci
+npx playwright install chromium
+node scripts/login-and-click.js
+```
