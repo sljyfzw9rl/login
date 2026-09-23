@@ -4,12 +4,12 @@ const fs = require('fs');
 let abortRequested = false;
 
 process.on('SIGTERM', () => {
-  console.warn('SIGTERM diterima.');
+  console.warn('SIGTERM diterima. Browser akan dihentikan dengan aman.');
   abortRequested = true;
 });
 
 process.on('SIGINT', () => {
-  console.warn('SIGINT diterima.');
+  console.warn('SIGINT diterima. Browser akan dihentikan dengan aman.');
   abortRequested = true;
 });
 
@@ -17,7 +17,7 @@ function now() {
   return new Date().toISOString();
 }
 
-function stamp() {
+function timestamp() {
   return new Date().toISOString().replace(/[:.]/g, '-');
 }
 
@@ -28,6 +28,13 @@ function parseList(value) {
     .filter(Boolean);
 }
 
+/**
+ * Format:
+ * email@example.com:password
+ *
+ * Pemisah yang digunakan adalah tanda ":" pertama.
+ * Jadi password tetap bisa mengandung ":" setelah pemisah pertama.
+ */
 function parseAccounts(value) {
   return String(value || '')
     .split(/\r?\n/)
@@ -38,13 +45,28 @@ function parseAccounts(value) {
 
       if (separatorIndex <= 0) {
         throw new Error(
-          `Format akun invalid pada baris ${index + 1}. Gunakan format email:password`
+          `Format akun pada baris ${index + 1} tidak valid. ` +
+          'Gunakan format email:password.'
+        );
+      }
+
+      const email = line
+        .slice(0, separatorIndex)
+        .trim();
+
+      const password = line
+        .slice(separatorIndex + 1)
+        .trim();
+
+      if (!email || !password) {
+        throw new Error(
+          `Email atau password pada baris ${index + 1} kosong.`
         );
       }
 
       return {
-        email: line.slice(0, separatorIndex).trim(),
-        password: line.slice(separatorIndex + 1).trim()
+        email,
+        password
       };
     });
 }
@@ -56,7 +78,7 @@ function sleep(ms) {
     const timer = setInterval(() => {
       if (abortRequested) {
         clearInterval(timer);
-        reject(new Error('Sleep dibatalkan karena signal.'));
+        reject(new Error('Sleep dihentikan karena proses menerima signal.'));
         return;
       }
 
@@ -68,30 +90,22 @@ function sleep(ms) {
   });
 }
 
+async function safeScreenshot(page, filePath) {
+  try {
+    await page.screenshot({
+      path: filePath,
+      fullPage: true
+    });
+  } catch (error) {
+    console.warn(`Gagal mengambil screenshot ${filePath}: ${error.message}`);
+  }
+}
+
 (async () => {
-  const emailIndex = Math.max(1, parseInt(process.env.EMAIL_INDEX || '1', 10));
-  const urlIndex = Math.max(1, parseInt(process.env.URL_INDEX || '1', 10));
-
-  const accounts = parseAccounts(process.env.GMAIL_ACCOUNT_LIST);
-  const urls = parseList(process.env.AI_STUDIO_URL);
-
-  const account = accounts[emailIndex - 1];
-  const targetUrl = urls[urlIndex - 1];
-
-  if (!account) {
-    throw new Error(
-      `Akun index ${emailIndex} tidak ditemukan. Total akun: ${accounts.length}`
-    );
-  }
-
-  if (!targetUrl) {
-    throw new Error(
-      `URL index ${urlIndex} tidak ditemukan. Total URL: ${urls.length}`
-    );
-  }
-
-  const username = account.email;
-  const password = account.password;
+  const emailIndex = Math.max(
+    1,
+    parseInt(process.env.EMAIL_INDEX || '1', 10)
+  );
 
   const keepOpenMinutes = Math.max(
     1,
@@ -103,10 +117,65 @@ function sleep(ms) {
     parseInt(process.env.RELOAD_INTERVAL_MINUTES || '30', 10)
   );
 
-  console.log(`[email:${emailIndex}][url:${urlIndex}] username: ${username}`);
-  console.log(`[email:${emailIndex}][url:${urlIndex}] target: ${targetUrl}`);
-  console.log(`[email:${emailIndex}][url:${urlIndex}] keep: ${keepOpenMinutes} menit`);
-  console.log(`[email:${emailIndex}][url:${urlIndex}] reload: ${reloadIntervalMinutes} menit`);
+  const accounts = parseAccounts(
+    process.env.GMAIL_ACCOUNT_LIST
+  );
+
+  const urls = parseList(
+    process.env.AI_STUDIO_URL
+  );
+
+  const account = accounts[emailIndex - 1];
+
+  if (!account) {
+    throw new Error(
+      `Akun dengan index ${emailIndex} tidak ditemukan. ` +
+      `Jumlah akun yang tersedia: ${accounts.length}.`
+    );
+  }
+
+  if (urls.length === 0) {
+    throw new Error(
+      'AI_STUDIO_URL kosong. Isi minimal satu URL.'
+    );
+  }
+
+  if (urls.length < 5) {
+    console.warn(
+      `Peringatan: hanya ditemukan ${urls.length} URL. ` +
+      'Lima tab akan tetap dibuat berdasarkan URL yang tersedia.'
+    );
+  }
+
+  /*
+   * Tepat lima tab.
+   *
+   * Jika tersedia lima URL:
+   * tab 1 -> URL 1
+   * tab 2 -> URL 2
+   * tab 3 -> URL 3
+   * tab 4 -> URL 4
+   * tab 5 -> URL 5
+   *
+   * Jika URL kurang dari lima, URL yang tersedia akan diulang
+   * sampai jumlah tab menjadi lima.
+   */
+  const targetUrls = Array.from(
+    { length: 5 },
+    (_, index) => urls[index % urls.length]
+  );
+
+  console.log('========================================');
+  console.log(`Job email index : ${emailIndex}`);
+  console.log(`Email           : ${account.email}`);
+  console.log(`Jumlah tab      : ${targetUrls.length}`);
+  console.log(`Durasi          : ${keepOpenMinutes} menit`);
+  console.log(`Interval reload : ${reloadIntervalMinutes} menit`);
+  console.log('========================================');
+
+  targetUrls.forEach((url, index) => {
+    console.log(`Tab ${index + 1}: ${url}`);
+  });
 
   const browser = await chromium.launch({
     headless: true,
@@ -118,82 +187,124 @@ function sleep(ms) {
     ]
   });
 
-  const hasStorageState = fs.existsSync('storageState.json');
+  const context = await browser.newContext({
+    viewport: {
+      width: 1280,
+      height: 800
+    },
+    userAgent:
+      'Mozilla/5.0 (X11; Linux x86_64) ' +
+      'AppleWebKit/537.36 ' +
+      '(KHTML, like Gecko) ' +
+      'Chrome/120.0.0.0 Safari/537.36'
+  });
 
-  const contextOptions = {
-    viewport: { width: 1280, height: 800 },
-    userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-  };
+  const pages = [];
 
-  if (hasStorageState) {
-    contextOptions.storageState = 'storageState.json';
-    console.log(`[email:${emailIndex}][url:${urlIndex}] memakai storageState.json`);
-  }
+  async function saveDebug(page, tabIndex, label) {
+    const prefix =
+      `debug-email-${emailIndex}-url-${tabIndex}-${label}-${timestamp()}`;
 
-  const context = await browser.newContext(contextOptions);
-  const page = await context.newPage();
-
-  async function saveDebug(label) {
-    const prefix = `debug-email-${emailIndex}-url-${urlIndex}-${label}-${stamp()}`;
-
-    try {
-      await page.screenshot({ path: `${prefix}.png`, fullPage: true });
-    } catch (err) {
-      console.warn(`[email:${emailIndex}][url:${urlIndex}] screenshot debug gagal`);
-    }
+    await safeScreenshot(
+      page,
+      `${prefix}.png`
+    );
 
     try {
       const html = await page.content();
-      fs.writeFileSync(`${prefix}.html`, html);
-    } catch (err) {
-      console.warn(`[email:${emailIndex}][url:${urlIndex}] html debug gagal`);
+
+      fs.writeFileSync(
+        `${prefix}.html`,
+        html
+      );
+    } catch (error) {
+      console.warn(
+        `[email:${emailIndex}][tab:${tabIndex}] ` +
+        `Gagal menyimpan HTML debug: ${error.message}`
+      );
     }
 
     try {
       const cookies = await context.cookies();
-      fs.writeFileSync(`${prefix}-cookies.json`, JSON.stringify(cookies, null, 2));
-    } catch (err) {
-      console.warn(`[email:${emailIndex}][url:${urlIndex}] cookies debug gagal`);
+
+      fs.writeFileSync(
+        `${prefix}-cookies.json`,
+        JSON.stringify(cookies, null, 2)
+      );
+    } catch (error) {
+      console.warn(
+        `[email:${emailIndex}][tab:${tabIndex}] ` +
+        `Gagal menyimpan cookies debug: ${error.message}`
+      );
     }
   }
 
-  async function clickAnyText(values) {
-    for (const val of values) {
+  async function clickAnyText(page, values, tabIndex) {
+    for (const value of values) {
       for (const frame of page.frames()) {
         try {
-          const locator = frame.getByText(val, { exact: false }).first();
+          const locator = frame
+            .getByText(value, { exact: false })
+            .first();
 
-          if (await locator.isVisible({ timeout: 1500 })) {
-            await locator.click({ timeout: 5000 });
-            console.log(`[email:${emailIndex}][url:${urlIndex}] klik: ${val}`);
-            return true;
+          const visible = await locator.isVisible({
+            timeout: 1500
+          }).catch(() => false);
+
+          if (!visible) {
+            continue;
           }
-        } catch (err) {
-          // lanjut
+
+          await locator.click({
+            timeout: 5000
+          });
+
+          console.log(
+            `[email:${emailIndex}][tab:${tabIndex}] ` +
+            `Klik teks: ${value}`
+          );
+
+          return true;
+        } catch (error) {
+          // Coba frame atau selector berikutnya.
         }
       }
     }
+
     return false;
   }
 
-  async function handleContinueAndSkip() {
-    await clickAnyText(['Continue to the app', 'Continue']);
+  async function handleContinueAndSkip(page, tabIndex) {
+    await clickAnyText(
+      page,
+      [
+        'Continue to the app',
+        'Continue'
+      ],
+      tabIndex
+    );
+
     await page.waitForTimeout(1000);
-    await clickAnyText(['Skip tutorial', 'Skip tour', 'Skip']);
+
+    await clickAnyText(
+      page,
+      [
+        'Skip tutorial',
+        'Skip tour',
+        'Skip'
+      ],
+      tabIndex
+    );
+
     await page.waitForTimeout(1000);
   }
 
   async function loginGoogle() {
-    if (hasStorageState) {
-      console.log(`[email:${emailIndex}][url:${urlIndex}] login dilewati karena storageState tersedia`);
-      return;
-    }
+    console.log(
+      `[email:${emailIndex}] Membuka halaman login Google satu kali.`
+    );
 
-    if (!username || !password) {
-      throw new Error('Email atau password akun tidak tersedia.');
-    }
-
-    await page.goto(
+    await pages[0].goto(
       'https://accounts.google.com/signin/v2/identifier',
       {
         waitUntil: 'domcontentloaded',
@@ -201,25 +312,62 @@ function sleep(ms) {
       }
     );
 
-    const emailInput = page.locator('#identifierId, input[type="email"]').first();
-    await emailInput.waitFor({ state: 'visible', timeout: 30000 });
-    await emailInput.fill(username);
+    const emailInput = pages[0]
+      .locator('#identifierId, input[type="email"]')
+      .first();
 
-    await page.locator('#identifierNext').click().catch(() => {});
-    await page.waitForTimeout(1500);
+    await emailInput.waitFor({
+      state: 'visible',
+      timeout: 30000
+    });
 
-    const passwordInput = page.locator('input[type="password"]').first();
-    await passwordInput.waitFor({ state: 'visible', timeout: 30000 });
-    await passwordInput.fill(password);
+    await emailInput.fill(account.email);
 
-    await page.locator('#passwordNext').click().catch(() => {});
-    await page.waitForTimeout(5000);
+    await pages[0]
+      .locator('#identifierNext')
+      .click()
+      .catch(() => {});
 
-    console.log(`[email:${emailIndex}][url:${urlIndex}] login selesai`);
+    await pages[0].waitForTimeout(2000);
+
+    const passwordInput = pages[0]
+      .locator('input[type="password"]')
+      .first();
+
+    await passwordInput.waitFor({
+      state: 'visible',
+      timeout: 30000
+    });
+
+    await passwordInput.fill(account.password);
+
+    await pages[0]
+      .locator('#passwordNext')
+      .click()
+      .catch(() => {});
+
+    await pages[0].waitForTimeout(5000);
+
+    const currentUrl = pages[0].url();
+
+    if (
+      /challenge|verify|signin/i.test(currentUrl)
+    ) {
+      throw new Error(
+        'Google meminta verifikasi tambahan atau login belum selesai.'
+      );
+    }
+
+    console.log(
+      `[email:${emailIndex}] Login Google selesai atau sesi sudah diterima.`
+    );
   }
 
-  async function openTarget() {
-    console.log(`[email:${emailIndex}][url:${urlIndex}] buka target: ${targetUrl}`);
+  async function openTab(page, targetUrl, tabIndex) {
+    console.log(
+      `[email:${emailIndex}][tab:${tabIndex}] ` +
+      `Membuka ${targetUrl}`
+    );
 
     await page.goto(targetUrl, {
       waitUntil: 'domcontentloaded',
@@ -227,98 +375,271 @@ function sleep(ms) {
     });
 
     await page.waitForTimeout(3000);
-    await handleContinueAndSkip();
+
+    await handleContinueAndSkip(
+      page,
+      tabIndex
+    );
   }
 
-  async function isTargetValid() {
+  async function isPageValid(page) {
     const currentUrl = page.url();
 
-    if (/accounts\.google\.com|signin|consent/i.test(currentUrl)) {
+    if (
+      /accounts\.google\.com|signin|consent/i.test(currentUrl)
+    ) {
       return false;
     }
 
-    const bodyText = await page.locator('body').textContent().catch(() => '');
+    const bodyText = await page
+      .locator('body')
+      .textContent()
+      .catch(() => '');
 
-    if (/sign in|authorize|consent|continue to the app/i.test(bodyText || '')) {
+    if (
+      /sign in|authorize|consent|continue to the app/i.test(
+        bodyText || ''
+      )
+    ) {
       return false;
     }
 
     return true;
   }
 
-  try {
-    await loginGoogle();
-    await openTarget();
+  async function reloadTab(page, targetUrl, tabIndex) {
+    try {
+      console.log(
+        `[email:${emailIndex}][tab:${tabIndex}] ` +
+        `Reload halaman pada ${now()}`
+      );
 
-    if (!(await isTargetValid())) {
-      await saveDebug('initial-invalid');
-      throw new Error('Target invalid setelah dibuka');
+      await page.reload({
+        waitUntil: 'domcontentloaded',
+        timeout: 60000
+      });
+
+      await page.waitForTimeout(3000);
+
+      await handleContinueAndSkip(
+        page,
+        tabIndex
+      );
+
+      const valid = await isPageValid(page);
+
+      if (!valid) {
+        console.warn(
+          `[email:${emailIndex}][tab:${tabIndex}] ` +
+          'Halaman tidak valid setelah reload. Membuka ulang.'
+        );
+
+        await openTab(
+          page,
+          targetUrl,
+          tabIndex
+        );
+      }
+
+      return true;
+    } catch (error) {
+      console.warn(
+        `[email:${emailIndex}][tab:${tabIndex}] ` +
+        `Reload gagal: ${error.message}`
+      );
+
+      try {
+        await openTab(
+          page,
+          targetUrl,
+          tabIndex
+        );
+
+        return true;
+      } catch (reopenError) {
+        console.error(
+          `[email:${emailIndex}][tab:${tabIndex}] ` +
+          `Gagal membuka ulang: ${reopenError.message}`
+        );
+
+        await saveDebug(
+          page,
+          tabIndex,
+          'reload-failed'
+        );
+
+        return false;
+      }
+    }
+  }
+
+  try {
+    /*
+     * Buat lima page/tab dalam satu browser context.
+     * Semua tab memakai sesi login email yang sama.
+     */
+    for (let index = 0; index < 5; index += 1) {
+      const page = await context.newPage();
+      pages.push(page);
+
+      page.on('console', (message) => {
+        console.log(
+          `[email:${emailIndex}][tab:${index + 1}] ` +
+          `console ${message.type()}: ${message.text()}`
+        );
+      });
+
+      page.on('requestfailed', (request) => {
+        console.warn(
+          `[email:${emailIndex}][tab:${index + 1}] ` +
+          `Request gagal: ${request.method()} ${request.url()}`
+        );
+      });
     }
 
-    await page.screenshot({
-      path: `opened-email-${emailIndex}-url-${urlIndex}-${stamp()}.png`,
-      fullPage: true
-    }).catch(() => {});
+    /*
+     * Login dilakukan sekali pada tab pertama.
+     * Cookies/session otomatis tersedia untuk tab lain
+     * karena semuanya memakai context yang sama.
+     */
+    await loginGoogle();
 
-    const endAt = Date.now() + keepOpenMinutes * 60 * 1000;
-    let nextReloadAt = Date.now() + reloadIntervalMinutes * 60 * 1000;
+    /*
+     * Buka lima URL.
+     * Tab pertama sudah berada di halaman Google setelah login,
+     * sehingga diarahkan ke URL pertama.
+     */
+    for (let index = 0; index < pages.length; index += 1) {
+      const tabIndex = index + 1;
+      const page = pages[index];
+      const targetUrl = targetUrls[index];
 
-    console.log(`[email:${emailIndex}][url:${urlIndex}] browser aktif sampai ${new Date(endAt).toISOString()}`);
+      await openTab(
+        page,
+        targetUrl,
+        tabIndex
+      );
 
-    while (!abortRequested && Date.now() < endAt) {
-      const remainingUntilReload = nextReloadAt - Date.now();
-      const remainingUntilEnd = endAt - Date.now();
+      const valid = await isPageValid(page);
+
+      if (!valid) {
+        await saveDebug(
+          page,
+          tabIndex,
+          'initial-invalid'
+        );
+
+        throw new Error(
+          `[tab:${tabIndex}] Target tidak valid setelah dibuka.`
+        );
+      }
+
+      await safeScreenshot(
+        page,
+        `opened-email-${emailIndex}-url-${tabIndex}-${timestamp()}.png`
+      );
+    }
+
+    const endAt =
+      Date.now() + keepOpenMinutes * 60 * 1000;
+
+    let nextReloadAt =
+      Date.now() + reloadIntervalMinutes * 60 * 1000;
+
+    console.log(
+      `[email:${emailIndex}] Lima tab aktif sampai ` +
+      `${new Date(endAt).toISOString()}`
+    );
+
+    /*
+     * Semua lima tab tetap terbuka.
+     * Setiap 30 menit, kelima tab direload satu per satu.
+     */
+    while (
+      !abortRequested &&
+      Date.now() < endAt
+    ) {
+      const remainingUntilReload =
+        nextReloadAt - Date.now();
+
+      const remainingUntilEnd =
+        endAt - Date.now();
 
       const waitTime = Math.min(
         30000,
-        Math.max(1000, remainingUntilReload, remainingUntilEnd)
+        Math.max(
+          1000,
+          Math.min(
+            remainingUntilReload,
+            remainingUntilEnd
+          )
+        )
       );
 
       await sleep(waitTime);
 
-      if (abortRequested || Date.now() >= endAt) {
+      if (
+        abortRequested ||
+        Date.now() >= endAt
+      ) {
         break;
       }
 
       if (Date.now() >= nextReloadAt) {
-        console.log(`[email:${emailIndex}][url:${urlIndex}] reload halaman pada ${now()}`);
+        console.log(
+          `[email:${emailIndex}] ` +
+          `Reload lima tab dimulai pada ${now()}`
+        );
 
-        try {
-          await page.reload({
-            waitUntil: 'domcontentloaded',
-            timeout: 60000
-          });
+        for (let index = 0; index < pages.length; index += 1) {
+          const tabIndex = index + 1;
+          const page = pages[index];
+          const targetUrl = targetUrls[index];
 
-          await page.waitForTimeout(3000);
-          await handleContinueAndSkip();
-
-          if (!(await isTargetValid())) {
-            console.warn(`[email:${emailIndex}][url:${urlIndex}] halaman setelah reload tidak valid, buka lagi target`);
-            await openTarget();
+          if (abortRequested) {
+            break;
           }
-        } catch (error) {
-          console.warn(`[email:${emailIndex}][url:${urlIndex}] reload gagal: ${error.message}`);
 
-          try {
-            await openTarget();
-          } catch (reopenError) {
-            console.warn(`[email:${emailIndex}][url:${urlIndex}] gagal buka ulang: ${reopenError.message}`);
-            await saveDebug('reload-failed');
-          }
+          await reloadTab(
+            page,
+            targetUrl,
+            tabIndex
+          );
         }
 
-        nextReloadAt = Date.now() + reloadIntervalMinutes * 60 * 1000;
+        nextReloadAt =
+          Date.now() + reloadIntervalMinutes * 60 * 1000;
+
+        console.log(
+          `[email:${emailIndex}] ` +
+          'Reload lima tab selesai.'
+        );
       }
     }
 
-    console.log(`[email:${emailIndex}][url:${urlIndex}] keepalive selesai`);
+    console.log(
+      `[email:${emailIndex}] Sesi lima tab selesai pada ${now()}`
+    );
   } catch (error) {
-    console.error(`[email:${emailIndex}][url:${urlIndex}] error: ${error.stack || error}`);
-    await saveDebug('error').catch(() => {});
+    console.error(
+      `[email:${emailIndex}] Error: ${error.stack || error}`
+    );
+
+    for (let index = 0; index < pages.length; index += 1) {
+      await saveDebug(
+        pages[index],
+        index + 1,
+        'error'
+      ).catch(() => {});
+    }
+
     process.exitCode = 2;
   } finally {
     await context.close().catch(() => {});
     await browser.close().catch(() => {});
-    console.log(`[email:${emailIndex}][url:${urlIndex}] browser ditutup`);
+
+    console.log(
+      `[email:${emailIndex}] Browser ditutup.`
+    );
   }
 })();
