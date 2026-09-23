@@ -1,231 +1,101 @@
-/**
- * scripts/login-and-click.js
- *
- * Final robust Playwright automation:
- * - Supports GMAIL_USER_LIST (comma/newline) mapped to matrix INSTANCE (1-based)
- * - Optional single GMAIL_USERNAME fallback
- * - Uses storageState.json if present (workflow may decode from secret)
- * - Automated login fallback with GMAIL_PASSWORD if no storageState
- * - Clicks "Continue to the app" and "Skip" (searches main frame + iframes)
- * - KEEP_OPEN_MINUTES stay period implemented as cancellable sleep (handles SIGTERM/SIGINT)
- * - Initial small jitter to further stagger parallel matrix jobs
- * - Dumps debug artifacts (screenshot, HTML, cookies) on errors/abort
- *
- * Environment variables used:
- * - TARGET_URL (required)
- * - GMAIL_USER_LIST (comma or newline separated) OR GMAIL_USERNAME (fallback)
- * - GMAIL_PASSWORD (required if not using storageState.json)
- * - INSTANCE (matrix, 1-based index)
- * - KEEP_OPEN_MINUTES (default 15)
- * - PLAYWRIGHT_HEADLESS ("false" to run headful locally)
- *
- * Usage: node scripts/login-and-click.js
- */
-
 const { chromium } = require('playwright');
 const fs = require('fs');
 
 let abortRequested = false;
-process.on('SIGTERM', () => { console.warn('Received SIGTERM — requesting abort.'); abortRequested = true; });
-process.on('SIGINT', () => { console.warn('Received SIGINT — requesting abort.'); abortRequested = true; });
-process.on('unhandledRejection', (r) => { console.warn('UnhandledRejection:', r); });
 
-function now() { return new Date().toISOString(); }
-function tsNow() { return new Date().toISOString().replace(/[:.]/g, '-'); }
+process.on('SIGTERM', () => {
+  console.warn('SIGTERM diterima. Browser akan dihentikan dengan aman.');
+  abortRequested = true;
+});
 
-function cancellableSleep(ms, checkInterval = 1000) {
+process.on('SIGINT', () => {
+  console.warn('SIGINT diterima. Browser akan dihentikan dengan aman.');
+  abortRequested = true;
+});
+
+function now() {
+  return new Date().toISOString();
+}
+
+function timestamp() {
+  return new Date().toISOString().replace(/[:.]/g, '-');
+}
+
+function parseList(value) {
+  return String(value || '')
+    .split(/[\r\n,]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function sleep(ms) {
   return new Promise((resolve, reject) => {
-    const start = Date.now();
-    const t = setInterval(() => {
+    const startedAt = Date.now();
+
+    const timer = setInterval(() => {
       if (abortRequested) {
-        clearInterval(t);
-        return reject(new Error('Sleep aborted by signal'));
+        clearInterval(timer);
+        reject(new Error('Sleep dihentikan karena signal proses.'));
+        return;
       }
-      if (Date.now() - start >= ms) {
-        clearInterval(t);
-        return resolve();
+
+      if (Date.now() - startedAt >= ms) {
+        clearInterval(timer);
+        resolve();
       }
-    }, checkInterval);
+    }, 1000);
   });
 }
 
 (async () => {
-  const TARGET_URL = process.env.TARGET_URL;
-  const LIST = process.env.GMAIL_USER_LIST || '';
-  const SINGLE = process.env.GMAIL_USERNAME || '';
-  const PASSWORD = process.env.GMAIL_PASSWORD;
-  const INSTANCE = parseInt(process.env.INSTANCE || '1', 10);
-  const KEEP_OPEN_MINUTES = parseInt(process.env.KEEP_OPEN_MINUTES || '15', 10);
-  const HEADLESS = process.env.PLAYWRIGHT_HEADLESS !== 'false';
+  const instance = Math.max(
+    1,
+    parseInt(process.env.INSTANCE || '1', 10)
+  );
 
-  console.log(`[${now()}][${INSTANCE}] Script start`);
+  const urls = parseList(process.env.AI_STUDIO_URL);
+  const users = parseList(process.env.GMAIL_USER_LIST);
 
-  if (!TARGET_URL) {
-    console.error('ERROR: TARGET_URL not set. Exiting.');
-    process.exit(1);
+  const targetUrl = urls[instance - 1];
+  const username =
+    users[instance - 1] ||
+    process.env.GMAIL_USERNAME ||
+    '';
+
+  const password = process.env.GMAIL_PASSWORD || '';
+
+  const keepOpenMinutes = Math.max(
+    1,
+    parseInt(process.env.KEEP_OPEN_MINUTES || '350', 10)
+  );
+
+  const reloadIntervalMinutes = Math.max(
+    1,
+    parseInt(process.env.RELOAD_INTERVAL_MINUTES || '30', 10)
+  );
+
+  console.log(`[${instance}] Script dimulai pada ${now()}`);
+  console.log(`[${instance}] Jumlah URL terdeteksi: ${urls.length}`);
+  console.log(`[${instance}] Durasi aktif: ${keepOpenMinutes} menit`);
+  console.log(`[${instance}] Interval reload: ${reloadIntervalMinutes} menit`);
+
+  if (!targetUrl) {
+    console.log(
+      `[${instance}] Tidak ada URL untuk instance ini. Selesai tanpa error.`
+    );
+    process.exit(0);
   }
 
-  // parse email list (comma or newline) and pick one by INSTANCE
-  const emails = LIST.split(/\r?\n|,/).map(s => s.trim()).filter(Boolean);
-  let USERNAME = '';
-  if (emails.length > 0) {
-    const idx = Math.max(0, INSTANCE - 1);
-    if (idx < emails.length) {
-      USERNAME = emails[idx];
-    } else {
-      console.warn(`[${INSTANCE}] No email at index ${idx} in GMAIL_USER_LIST (length ${emails.length}).`);
-    }
-  }
-  if (!USERNAME && SINGLE) USERNAME = SINGLE;
-  if (!USERNAME) {
-    console.error(`[${INSTANCE}] ERROR: No username determined. Set GMAIL_USER_LIST or GMAIL_USERNAME. Exiting.`);
-    process.exit(1);
-  }
+  const hasStorageState = fs.existsSync('storageState.json');
 
-  // small random jitter to further de-synchronize parallel instances (0-30s)
-  const jitterMs = Math.floor(Math.random() * 30000);
-  if (jitterMs > 0) {
-    console.log(`[${INSTANCE}] Sleeping jitter ${jitterMs}ms before starting to reduce concurrency.`);
-    try { await cancellableSleep(jitterMs); } catch (e) { console.warn(`[${INSTANCE}] Jitter sleep aborted: ${e.message}`); }
-  }
-
-  const ts = () => tsNow();
-
-  async function dumpDebug(page, prefix) {
-    try {
-      const t = ts();
-      const ss = `debug-${INSTANCE}-${prefix}-${t}.png`;
-      const html = `debug-${INSTANCE}-${prefix}-${t}.html`;
-      await page.screenshot({ path: ss, fullPage: true }).catch(()=>{});
-      fs.writeFileSync(html, await page.content());
-      try {
-        const cookies = await page.context().cookies();
-        fs.writeFileSync(`debug-${INSTANCE}-${prefix}-${t}-cookies.json`, JSON.stringify(cookies, null, 2));
-      } catch (e) {}
-      console.log(`[${INSTANCE}] Dumped debug files: ${ss}, ${html}`);
-    } catch (e) {
-      console.warn(`[${INSTANCE}] dumpDebug failed: ${e && e.message ? e.message : e}`);
-    }
-  }
-
-  async function hasAuthCookies(context) {
-    try {
-      const cookies = await context.cookies();
-      const names = cookies.map(c => c.name);
-      console.log(`[${INSTANCE}] Cookies present: ${names.join(', ')}`);
-      const authNames = ['SID','HSID','SAPISID','APISID','SIDCC'];
-      return names.some(n => authNames.includes(n));
-    } catch (e) {
-      console.warn(`[${INSTANCE}] Error reading cookies: ${e.message}`);
-      return false;
-    }
-  }
-
-  async function checkMyAccount(page) {
-    try {
-      await page.goto('https://myaccount.google.com', { waitUntil: 'networkidle', timeout: 15000 });
-      const cur = page.url();
-      console.log(`[${INSTANCE}] myaccount URL: ${cur}`);
-      if (cur.includes('signin') || cur.includes('accounts.google.com/')) return false;
-      if (await page.locator('img[alt*="Google Account"]').count() > 0) return true;
-      if (await page.locator('text=Sign out').count() > 0) return true;
-      return false;
-    } catch (e) {
-      console.warn(`[${INSTANCE}] checkMyAccount error: ${e.message}`);
-      return false;
-    }
-  }
-
-  async function clickInFrames(page, selector, opts = {}) {
-    try {
-      const loc = page.locator(selector);
-      if (await loc.count() > 0) {
-        for (let i = 0; i < await loc.count(); i++) {
-          try {
-            const el = loc.nth(i);
-            if (await el.isVisible()) {
-              await el.click(opts);
-              return true;
-            }
-          } catch (e) {}
-        }
-      }
-    } catch (e) {}
-    for (const frame of page.frames()) {
-      try {
-        const fl = frame.locator(selector);
-        if (await fl.count() > 0) {
-          for (let i = 0; i < await fl.count(); i++) {
-            try {
-              const fel = fl.nth(i);
-              if (await fel.isVisible()) {
-                await fel.click(opts);
-                return true;
-              }
-            } catch (e) {}
-          }
-        }
-      } catch (e) {}
-    }
-    return false;
-  }
-
-  async function tryClickContinue(page) {
-    const sels = [
-      'button:has-text("Continue to the app")',
-      'text="Continue to the app"',
-      'button:has-text("Continue")',
-      'text="Continue"'
-    ];
-    for (const s of sels) {
-      try {
-        const ok = await clickInFrames(page, s, { timeout: 7000 }).catch(()=>false);
-        if (ok) { console.log(`[${INSTANCE}] Clicked continue (${s})`); return true; }
-      } catch (e) {}
-    }
-    return false;
-  }
-
-  async function tryClickSkip(page) {
-    const sels = [
-      'button:has-text("Skip")',
-      'text="Skip"',
-      'button:has-text("Skip tutorial")',
-      'button:has-text("Skip tour")'
-    ];
-    for (const s of sels) {
-      try {
-        const ok = await clickInFrames(page, s, { timeout: 5000 }).catch(()=>false);
-        if (ok) { console.log(`[${INSTANCE}] Clicked skip (${s})`); return true; }
-      } catch (e) {}
-    }
-    return false;
-  }
-
-  async function verifyTarget(page) {
-    try {
-      const cur = page.url();
-      console.log(`[${INSTANCE}] Current target URL: ${cur}`);
-      if (cur.includes('accounts.google.com') || cur.includes('consent') || cur.includes('signin')) {
-        console.warn(`[${INSTANCE}] Redirected to sign-in/consent page.`);
-        return false;
-      }
-      await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(()=>{});
-      await page.waitForTimeout(1500);
-      const body = (await page.textContent('body')) || '';
-      if (!/sign in|this app is from another developer|continue to the app|consent|authorize/i.test(body)) {
-        console.log(`[${INSTANCE}] Body heuristic suggests page is ready.`);
-        return true;
-      }
-      return false;
-    } catch (e) {
-      console.warn(`[${INSTANCE}] verifyTarget error: ${e.message}`);
-      return false;
-    }
+  if (!username && !hasStorageState) {
+    throw new Error(
+      'GMAIL_USERNAME atau GMAIL_USER_LIST wajib diisi jika GMAIL_STORAGE_STATE tidak digunakan.'
+    );
   }
 
   const browser = await chromium.launch({
-    headless: HEADLESS,
+    headless: true,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
@@ -234,135 +104,306 @@ function cancellableSleep(ms, checkInterval = 1000) {
     ]
   });
 
-  const userAgent = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-  const contextOptions = { userAgent, viewport: { width: 1280, height: 800 } };
-  if (fs.existsSync('storageState.json')) {
+  const contextOptions = {
+    viewport: {
+      width: 1280,
+      height: 800
+    },
+    userAgent:
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36'
+  };
+
+  if (hasStorageState) {
     contextOptions.storageState = 'storageState.json';
-    console.log(`[${INSTANCE}] Found storageState.json — will use it.`);
+    console.log(`[${instance}] Menggunakan storageState.json`);
   }
 
   const context = await browser.newContext(contextOptions);
   const page = await context.newPage();
 
-  page.on('console', msg => { try { console.log(`[console][${INSTANCE}] ${msg.type()}: ${msg.text()}`); } catch(e){} });
-  page.on('requestfailed', req => { try { console.log(`[requestfailed][${INSTANCE}] ${req.method()} ${req.url()} => ${req.failure()?.errorText || 'failed'}`); } catch(e){} });
+  page.on('console', (message) => {
+    console.log(
+      `[browser-${instance}] ${message.type()}: ${message.text()}`
+    );
+  });
 
-  async function runOnce() {
-    console.log(`[${INSTANCE}] Running for ${USERNAME} at ${now()}`);
+  page.on('requestfailed', (request) => {
+    console.warn(
+      `[${instance}] Request gagal: ${request.method()} ${request.url()}`
+    );
+  });
+
+  async function saveDebug(label) {
+    const prefix = `debug-${instance}-${label}-${timestamp()}`;
+
     try {
-      // Login flow if needed
-      if (!contextOptions.storageState) {
-        if (!PASSWORD) throw new Error('GMAIL_PASSWORD not set and no storageState.json present.');
-        console.log(`[${INSTANCE}] Navigating to Google sign-in page...`);
-        await page.goto('https://accounts.google.com/signin/v2/identifier', { waitUntil: 'networkidle', timeout: 30000 });
-        console.log(`[${INSTANCE}] After nav: ${page.url()}`);
-        try {
-          await page.waitForSelector('#identifierId, input[type="email"], input[name="identifier"]', { timeout: 30000, state: 'visible' });
-        } catch (e) {
-          console.warn(`[${INSTANCE}] Email input not visible: ${e.message}`);
-          await dumpDebug(page, 'no-email');
-          throw e;
-        }
-        const emailEl = (await page.$('#identifierId')) || (await page.$('input[type="email"]')) || (await page.$('input[name="identifier"]'));
-        if (!emailEl) { await dumpDebug(page, 'no-email-el'); throw new Error('No email element'); }
-        await emailEl.fill(USERNAME).catch(e => console.warn(`[${INSTANCE}] fill email failed: ${e.message}`));
-        await Promise.all([ page.click('#identifierNext').catch(()=>{}), page.waitForTimeout(1200) ]);
-        // handle account chooser "Use another account" if present
-        try {
-          await page.waitForTimeout(800);
-          const useAnother = page.locator('text=Use another account');
-          if (await useAnother.count() > 0) {
-            await useAnother.first().click({ timeout: 3000 }).catch(()=>{});
-            console.log(`[${INSTANCE}] Clicked 'Use another account'`);
-          }
-        } catch(e){}
-        try {
-          await page.waitForSelector('input[type="password"]', { timeout: 20000, state: 'visible' });
-        } catch (e) {
-          console.warn(`[${INSTANCE}] Password input not visible: ${e.message}`);
-          await dumpDebug(page, 'no-password');
-        }
-        const passEl = await page.$('input[type="password"]');
-        if (passEl) {
-          await passEl.fill(PASSWORD).catch(e => console.warn(`[${INSTANCE}] fill password failed: ${e.message}`));
-          await Promise.all([ page.click('#passwordNext').catch(()=>{}), page.waitForTimeout(1500) ]);
-        } else {
-          console.warn(`[${INSTANCE}] Password element not found; login might fail.`);
-        }
-        await page.waitForTimeout(2000);
-      } else {
-        console.log(`[${INSTANCE}] Using storageState.json — skipping login.`);
-      }
+      await page.screenshot({
+        path: `${prefix}.png`,
+        fullPage: true
+      });
+    } catch (error) {
+      console.warn(`[${instance}] Gagal menyimpan screenshot debug.`);
+    }
 
-      const cookiesOk = await hasAuthCookies(context);
-      const myAcctOk = await checkMyAccount(page);
-      console.log(`[${INSTANCE}] Auth checks: cookiesOk=${cookiesOk}, myAccount=${myAcctOk}`);
-      if (!cookiesOk && !myAcctOk && !contextOptions.storageState) {
-        console.warn(`[${INSTANCE}] Login not fully confirmed; continuing anyway.`);
-        await dumpDebug(page, 'login-not-confirmed');
-      }
+    try {
+      const html = await page.content();
+      fs.writeFileSync(`${prefix}.html`, html);
+    } catch (error) {
+      console.warn(`[${instance}] Gagal menyimpan HTML debug.`);
+    }
 
-      // Navigate to target and handle onboarding modal
-      console.log(`[${INSTANCE}] Navigating to target: ${TARGET_URL}`);
-      await page.goto(TARGET_URL, { waitUntil: 'networkidle', timeout: 30000 }).catch(()=>{});
-      await page.waitForTimeout(1000);
-
-      const contClicked = await tryClickContinue(page);
-      if (!contClicked) {
-        await page.waitForTimeout(1500);
-        if (await tryClickContinue(page)) console.log(`[${INSTANCE}] Continue clicked on retry.`);
-      }
-
-      await page.waitForTimeout(800);
-      const skipped = await tryClickSkip(page);
-      if (skipped) await page.waitForTimeout(800);
-
-      const ok = await verifyTarget(page);
-      if (!ok) {
-        console.warn(`[${INSTANCE}] Target verification failed.`);
-        await dumpDebug(page, 'verify-failed');
-        return false;
-      }
-
-      const ss = `opened-${INSTANCE}-${ts()}.png`;
-      await page.screenshot({ path: ss, fullPage: true }).catch(()=>{});
-      console.log(`[${INSTANCE}] Saved screenshot: ${ss}`);
-
-      // KEEP_OPEN_MINUTES stay, cancellable
-      const ms = Math.max(0, KEEP_OPEN_MINUTES) * 60 * 1000;
-      if (ms > 0) {
-        try {
-          console.log(`[${INSTANCE}] Staying open for ${KEEP_OPEN_MINUTES} minute(s). (cancellable)`);
-          await cancellableSleep(ms);
-          console.log(`[${INSTANCE}] Stay period completed.`);
-        } catch (e) {
-          console.warn(`[${INSTANCE}] Stay aborted: ${e.message}`);
-          await dumpDebug(page, 'stay-aborted');
-        }
-      }
-
-      return true;
-    } catch (err) {
-      console.error(`[${INSTANCE}] Run error: ${err && err.message ? err.message : err}`);
-      try { await dumpDebug(page, 'run-exception'); } catch(e){}
-      return false;
+    try {
+      const cookies = await context.cookies();
+      fs.writeFileSync(
+        `${prefix}-cookies.json`,
+        JSON.stringify(cookies, null, 2)
+      );
+    } catch (error) {
+      console.warn(`[${instance}] Gagal menyimpan cookies debug.`);
     }
   }
 
+  async function clickText(texts) {
+    for (const text of texts) {
+      for (const frame of page.frames()) {
+        try {
+          const locator = frame
+            .getByText(text, { exact: false })
+            .first();
+
+          if (await locator.isVisible({ timeout: 1500 })) {
+            await locator.click({ timeout: 5000 });
+            console.log(`[${instance}] Berhasil klik: ${text}`);
+            return true;
+          }
+        } catch (error) {
+          // Coba selector berikutnya.
+        }
+      }
+    }
+
+    return false;
+  }
+
+  async function handleContinueAndSkip() {
+    await clickText([
+      'Continue to the app',
+      'Continue'
+    ]);
+
+    await page.waitForTimeout(1000);
+
+    await clickText([
+      'Skip tutorial',
+      'Skip tour',
+      'Skip'
+    ]);
+  }
+
+  async function login() {
+    if (hasStorageState) {
+      console.log(`[${instance}] Login dilewati karena storageState tersedia.`);
+      return;
+    }
+
+    if (!password) {
+      throw new Error(
+        'GMAIL_PASSWORD wajib diisi jika GMAIL_STORAGE_STATE tidak tersedia.'
+      );
+    }
+
+    console.log(`[${instance}] Membuka halaman login Google.`);
+
+    await page.goto(
+      'https://accounts.google.com/signin/v2/identifier',
+      {
+        waitUntil: 'domcontentloaded',
+        timeout: 60000
+      }
+    );
+
+    const emailInput = page
+      .locator('#identifierId, input[type="email"]')
+      .first();
+
+    await emailInput.waitFor({
+      state: 'visible',
+      timeout: 30000
+    });
+
+    await emailInput.fill(username);
+
+    await page
+      .locator('#identifierNext')
+      .click()
+      .catch(() => {});
+
+    await page.waitForTimeout(2000);
+
+    const passwordInput = page
+      .locator('input[type="password"]')
+      .first();
+
+    await passwordInput.waitFor({
+      state: 'visible',
+      timeout: 30000
+    });
+
+    await passwordInput.fill(password);
+
+    await page
+      .locator('#passwordNext')
+      .click()
+      .catch(() => {});
+
+    await page.waitForTimeout(5000);
+
+    console.log(`[${instance}] Proses login selesai.`);
+  }
+
+  async function openTarget() {
+    console.log(`[${instance}] Membuka URL: ${targetUrl}`);
+
+    await page.goto(targetUrl, {
+      waitUntil: 'domcontentloaded',
+      timeout: 60000
+    });
+
+    await page.waitForTimeout(3000);
+    await handleContinueAndSkip();
+  }
+
+  async function isTargetValid() {
+    const currentUrl = page.url();
+
+    if (
+      /accounts\.google\.com|signin|consent/i.test(currentUrl)
+    ) {
+      return false;
+    }
+
+    const bodyText = await page
+      .locator('body')
+      .textContent()
+      .catch(() => '');
+
+    if (
+      /sign in|authorize|consent|continue to the app/i.test(
+        bodyText || ''
+      )
+    ) {
+      return false;
+    }
+
+    return true;
+  }
+
   try {
-    const success = await runOnce();
-    if (!success) process.exitCode = 2;
-  } catch (e) {
-    console.error(`[${INSTANCE}] Fatal error: ${e && e.message ? e.message : e}`);
+    await login();
+    await openTarget();
+
+    if (!(await isTargetValid())) {
+      await saveDebug('initial-invalid');
+      throw new Error('Halaman target tidak valid setelah dibuka.');
+    }
+
+    await page
+      .screenshot({
+        path: `opened-${instance}-${timestamp()}.png`,
+        fullPage: true
+      })
+      .catch(() => {});
+
+    const endAt =
+      Date.now() + keepOpenMinutes * 60 * 1000;
+
+    let nextReloadAt =
+      Date.now() + reloadIntervalMinutes * 60 * 1000;
+
+    console.log(
+      `[${instance}] Browser akan aktif sampai ${new Date(endAt).toISOString()}`
+    );
+
+    while (!abortRequested && Date.now() < endAt) {
+      const remainingUntilReload =
+        nextReloadAt - Date.now();
+
+      const remainingUntilEnd =
+        endAt - Date.now();
+
+      const waitTime = Math.min(
+        30000,
+        Math.max(
+          1000,
+          remainingUntilReload,
+          remainingUntilEnd
+        )
+      );
+
+      await sleep(waitTime);
+
+      if (abortRequested || Date.now() >= endAt) {
+        break;
+      }
+
+      if (Date.now() >= nextReloadAt) {
+        console.log(
+          `[${instance}] Reload halaman pada ${now()}`
+        );
+
+        try {
+          await page.reload({
+            waitUntil: 'domcontentloaded',
+            timeout: 60000
+          });
+
+          await page.waitForTimeout(3000);
+          await handleContinueAndSkip();
+
+          const valid = await isTargetValid();
+
+          if (!valid) {
+            console.warn(
+              `[${instance}] Halaman tidak valid setelah reload. Membuka ulang URL.`
+            );
+
+            await openTarget();
+          }
+        } catch (error) {
+          console.warn(
+            `[${instance}] Reload gagal: ${error.message}`
+          );
+
+          try {
+            await openTarget();
+          } catch (reopenError) {
+            console.warn(
+              `[${instance}] Gagal membuka ulang halaman: ${reopenError.message}`
+            );
+
+            await saveDebug('reload-failed');
+          }
+        }
+
+        nextReloadAt =
+          Date.now() + reloadIntervalMinutes * 60 * 1000;
+      }
+    }
+
+    console.log(
+      `[${instance}] Keepalive selesai pada ${now()}`
+    );
+  } catch (error) {
+    console.error(
+      `[${instance}] Error: ${error.stack || error}`
+    );
+
+    await saveDebug('error').catch(() => {});
     process.exitCode = 2;
   } finally {
-    try {
-      if (abortRequested) {
-        try { await dumpDebug(page, 'final-abort'); } catch(e){}
-      }
-    } catch (e) {}
-    try { await context.close(); } catch(e){}
-    try { await browser.close(); } catch(e){}
-    console.log(`[${INSTANCE}] Exiting at ${now()}`);
+    await context.close().catch(() => {});
+    await browser.close().catch(() => {});
+
+    console.log(`[${instance}] Browser ditutup.`);
   }
 })();
