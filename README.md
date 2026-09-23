@@ -19,7 +19,7 @@ Workflow dijalankan setiap 6 jam menggunakan cron UTC:
 0 */6 * * *
 ```
 
-Setiap workflow menjalankan matrix lima job secara paralel. Satu job memakai satu akun dan membuka lima tab/context terisolasi. Jadi totalnya 5 job × 5 tab = 25 tab:
+Setiap workflow menjalankan matrix lima job secara paralel. Satu job memakai satu akun dan membuka lima page/tab dalam satu browser context akun. Jadi totalnya 5 job × 5 tab = 25 tab:
 
 - Matrix job 1 memakai Email 1 dan membuka URL 1 sampai URL 5.
 - Matrix job 2 memakai Email 2 dan membuka URL 1 sampai URL 5.

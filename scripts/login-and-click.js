@@ -232,6 +232,7 @@ async function isTargetValid(page) {
 
 async function runIsolatedSession({
   browser,
+  context: sharedContext,
   statePath,
   targetUrl,
   emailIndex,
@@ -241,7 +242,7 @@ async function runIsolatedSession({
 }) {
   const prefix = `[email:${emailIndex}][url:${urlIndex}]`;
 
-  const context = await browser.newContext({
+  const context = sharedContext || await browser.newContext({
     storageState: statePath,
     viewport: { width: 1280, height: 800 },
     // recordVideo dimatikan dulu biar lebih ringan (bisa diaktifkan lagi kalau perlu)
@@ -314,7 +315,8 @@ async function runIsolatedSession({
     console.error(`${prefix} Error: ${error.stack || error}`);
     await saveDebug(page, emailIndex, urlIndex, 'error').catch(() => {});
   } finally {
-    await context.close().catch(() => {});
+    await page.close().catch(() => {});
+    if (!sharedContext) await context.close().catch(() => {});
   }
 }
 
@@ -367,20 +369,30 @@ async function runIsolatedSession({
       warmUpUrl: targetUrls[0]
     });
 
-    console.log(`[email:${emailIndex}] Menjalankan ${targetUrls.length} context terisolasi.`);
-    await Promise.all(
-      targetUrls.map((targetUrl, index) =>
-        runIsolatedSession({
-          browser,
-          statePath,
-          targetUrl,
-          emailIndex,
-          urlIndex: index + 1,
-          keepOpenMinutes,
-          reloadIntervalMinutes
-        })
-      )
-    );
+    const sessionContext = await browser.newContext({
+      storageState: statePath,
+      viewport: { width: 1280, height: 800 }
+    });
+    try {
+      console.log(`[email:${emailIndex}] Membuka ${targetUrls.length} page/tab dalam 1 context akun.`);
+      console.log(`[email:${emailIndex}] EXPECTED_PAGES=${targetUrls.length}`);
+      await Promise.all(
+        targetUrls.map((targetUrl, index) =>
+          runIsolatedSession({
+            browser,
+            context: sessionContext,
+            statePath,
+            targetUrl,
+            emailIndex,
+            urlIndex: index + 1,
+            keepOpenMinutes,
+            reloadIntervalMinutes
+          })
+        )
+      );
+    } finally {
+      await sessionContext.close().catch(() => {});
+    }
   } finally {
     await browser.close().catch(() => {});
     fs.rmSync(tempDirectory, { recursive: true, force: true });
