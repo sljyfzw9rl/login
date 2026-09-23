@@ -2,7 +2,10 @@ name: Keep AI Studio sessions alive
 
 on:
   schedule:
+    # GitHub Actions menggunakan UTC.
+    # Berjalan setiap 6 jam.
     - cron: '0 */6 * * *'
+
   workflow_dispatch:
 
 concurrency:
@@ -16,19 +19,24 @@ jobs:
 
     strategy:
       fail-fast: false
+
+      # Hanya 5 job.
+      # Satu job = satu email = lima tab.
       matrix:
         email_index: [1, 2, 3, 4, 5]
+
       max-parallel: 5
 
     env:
       GMAIL_ACCOUNT_LIST: ${{ secrets.GMAIL_ACCOUNT_LIST }}
       AI_STUDIO_URL: ${{ secrets.AI_STUDIO_URL }}
+
       EMAIL_INDEX: ${{ matrix.email_index }}
       KEEP_OPEN_MINUTES: '350'
       RELOAD_INTERVAL_MINUTES: '30'
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v5
 
       - name: Setup Node.js
@@ -44,14 +52,36 @@ jobs:
       - name: Run one email with five tabs
         run: node scripts/login-and-click.js
 
-      - name: Upload artifacts
+      - name: Upload screenshots and debug files
+        id: upload_artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: artifacts-email-${{ matrix.email_index }}
+          name: screenshots-email-${{ matrix.email_index }}
           if-no-files-found: ignore
+          retention-days: 7
           path: |
             opened-email-${{ matrix.email_index }}-url-*.png
             debug-email-${{ matrix.email_index }}-url-*.png
             debug-email-${{ matrix.email_index }}-url-*.html
             debug-email-${{ matrix.email_index }}-url-*-cookies.json
+            debug-email-${{ matrix.email_index }}-url-*-url.txt
+
+      - name: Create screenshot link in Summary
+        if: always()
+        shell: bash
+        env:
+          ARTIFACT_URL: ${{ steps.upload_artifacts.outputs.artifact-url }}
+          EMAIL_INDEX: ${{ matrix.email_index }}
+        run: |
+          {
+            echo "## Screenshot Email ${EMAIL_INDEX}"
+            echo
+            if [ -n "$ARTIFACT_URL" ]; then
+              echo "[Buka screenshot dan debug artifact](${ARTIFACT_URL})"
+            else
+              echo "Artifact screenshot tidak tersedia."
+            fi
+            echo
+            echo "Job ini menggunakan email index ${EMAIL_INDEX} dan lima tab AI Studio."
+          } >> "$GITHUB_STEP_SUMMARY"
