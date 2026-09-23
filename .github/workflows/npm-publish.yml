@@ -14,6 +14,7 @@ concurrency:
 
 jobs:
   visit:
+    name: email-${{ matrix.email_index }}-5-tabs
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
@@ -45,7 +46,7 @@ jobs:
           npm install
           npx playwright install --with-deps chromium
 
-      - name: Run one email with five tabs
+      - name: Run matrix email with five tabs
         run: node scripts/login-and-click.js
 
       - name: Upload screenshots and debug files

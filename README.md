@@ -59,7 +59,7 @@ https://url5
 
 ### GMAIL_ACCOUNT_LIST
 
-Isi lima akun dalam format `email:password`, satu akun per baris:
+Isi lima akun dalam format `email:password`, satu akun per baris. Pemisah koma juga didukung, tetapi format baris baru lebih aman:
 
 ```text
 email1@gmail.com:password1

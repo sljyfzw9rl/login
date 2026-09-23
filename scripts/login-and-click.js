@@ -22,7 +22,7 @@ function parseList(value) {
 }
 function parseAccounts(value) {
   return String(value || '')
-    .split(/\r?\n/)
+    .split(/[\r\n,]+/)
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line, index) => {
@@ -354,6 +354,8 @@ async function runIsolatedSession({
 
   try {
     console.log(`MATRIX_EMAIL_INDEX=${emailIndex}`);
+    console.log(`PARSED_ACCOUNTS=${accounts.length}`);
+    console.log(`PARSED_URLS=${urls.length}`);
     console.log('TOTAL_MATRIX_JOBS=5');
     console.log('TOTAL_ISOLATED_SESSIONS=5');
 
