@@ -34,21 +34,21 @@ function parseAccounts(value) {
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line, index) => {
-      const separator = line.indexOf(':');
+      const separatorIndex = line.indexOf(':');
 
-      if (separator <= 0) {
+      if (separatorIndex <= 0) {
         throw new Error(
-          `Format akun pada baris ${index + 1} salah. ` +
+          `Format akun baris ${index + 1} tidak valid. ` +
           'Gunakan format email:password.'
         );
       }
 
-      const email = line.slice(0, separator).trim();
-      const password = line.slice(separator + 1).trim();
+      const email = line.slice(0, separatorIndex).trim();
+      const password = line.slice(separatorIndex + 1).trim();
 
       if (!email || !password) {
         throw new Error(
-          `Email atau password pada baris ${index + 1} kosong.`
+          `Email/password baris ${index + 1} kosong.`
         );
       }
 
@@ -151,6 +151,10 @@ async function safeScreenshot(page, filePath) {
   console.log(`Interval reload : ${reloadIntervalMinutes} menit`);
   console.log('========================================');
 
+  targetUrls.forEach((url, index) => {
+    console.log(`Tab ${index + 1}: ${url}`);
+  });
+
   const browser = await chromium.launch({
     headless: true,
     args: [
@@ -185,11 +189,9 @@ async function safeScreenshot(page, filePath) {
     );
 
     try {
-      const html = await page.content();
-
       fs.writeFileSync(
         `${prefix}.html`,
-        html
+        await page.content()
       );
     } catch (error) {
       console.warn(
@@ -211,12 +213,6 @@ async function safeScreenshot(page, filePath) {
     }
   }
 
-  function isGoogleLoginUrl(url) {
-    return /accounts\.google\.com\/(signin|ServiceLogin|challenge)/i.test(
-      url
-    );
-  }
-
   async function isVisible(page, selector) {
     return page
       .locator(selector)
@@ -225,7 +221,7 @@ async function safeScreenshot(page, filePath) {
       .catch(() => false);
   }
 
-  async function clickText(page, values, tabIndex) {
+  async function clickText(page, values, tabIndex = 0) {
     for (const value of values) {
       for (const frame of page.frames()) {
         try {
@@ -246,12 +242,12 @@ async function safeScreenshot(page, filePath) {
           });
 
           console.log(
-            `[email:${emailIndex}][tab:${tabIndex}] Klik "${value}".`
+            `[email:${emailIndex}][tab:${tabIndex}] Klik: ${value}`
           );
 
           return true;
         } catch (error) {
-          // Coba selector/frame berikutnya.
+          // Coba frame/teks berikutnya.
         }
       }
     }
@@ -284,118 +280,123 @@ async function safeScreenshot(page, filePath) {
     await page.waitForTimeout(2000);
   }
 
-  async function waitForGoogleLogin(page) {
-    const timeoutAt = Date.now() + 60000;
+  async function detectGoogleChallenge(page) {
+    const bodyText = await page
+      .locator('body')
+      .innerText()
+      .catch(() => '');
+
+    return /verify it.?s you|try another way|2-step verification|two-step verification|confirm it.?s you|suspicious sign.?in|couldn.?t verify|captcha/i
+      .test(bodyText);
+  }
+
+  async function loginFormStillVisible(page) {
+    const emailVisible = await isVisible(
+      page,
+      '#identifierId, input[type="email"]'
+    );
+
+    const passwordVisible = await isVisible(
+      page,
+      'input[type="password"]'
+    );
+
+    return emailVisible || passwordVisible;
+  }
+
+  async function waitForLoginCompletion(page) {
+    const timeoutAt = Date.now() + 120000;
+    let lastLogAt = 0;
 
     console.log(
-      `[email:${emailIndex}] Menunggu redirect login Google maksimal 60 detik.`
+      `[email:${emailIndex}] Menunggu session Google maksimal 120 detik.`
     );
 
     while (Date.now() < timeoutAt) {
+      if (abortRequested) {
+        throw new Error('Login dihentikan karena signal.');
+      }
+
       const currentUrl = page.url();
+      const formVisible = await loginFormStillVisible(page);
+      const challengeVisible = await detectGoogleChallenge(page);
 
-      const emailVisible =
-        await isVisible(
+      if (challengeVisible) {
+        await saveDebug(
           page,
-          '#identifierId, input[type="email"]'
+          1,
+          'google-challenge'
         );
 
-      const passwordVisible =
-        await isVisible(
-          page,
-          'input[type="password"]'
-        );
-
-      const accountChooserVisible =
-        await isVisible(
-          page,
-          'text=Choose an account'
-        ) ||
-        await isVisible(
-          page,
-          'text=Use another account'
-        );
-
-      const verificationVisible =
-        await isVisible(
-          page,
-          'text=Verify it’s you'
-        ) ||
-        await isVisible(
-          page,
-          'text=Verify it\'s you'
-        ) ||
-        await isVisible(
-          page,
-          'text=Try another way'
-        );
-
-      if (verificationVisible) {
         throw new Error(
-          'Google meminta verifikasi tambahan atau 2FA.'
+          'Google meminta verifikasi tambahan/2FA. ' +
+          'Login otomatis tidak dapat melanjutkan challenge tersebut.'
         );
       }
 
       /*
-       * Account chooser dapat muncul setelah password.
-       * Pilih akun yang sesuai jika tersedia.
+       * Jika form email/password sudah tidak terlihat,
+       * password kemungkinan sudah diterima.
+       *
+       * Jangan mensyaratkan URL harus langsung keluar dari
+       * accounts.google.com karena Google bisa melakukan redirect
+       * internal terlebih dahulu.
        */
-      if (accountChooserVisible) {
-        const clicked = await clickText(
-          page,
-          [
-            account.email,
-            'Use another account'
-          ],
-          0
+      if (!formVisible) {
+        console.log(
+          `[email:${emailIndex}] Form login sudah tidak terlihat.`
         );
 
-        if (clicked) {
-          await page.waitForTimeout(3000);
+        await page.waitForTimeout(10000);
+
+        const formAfterWait = await loginFormStillVisible(page);
+        const challengeAfterWait = await detectGoogleChallenge(page);
+
+        if (challengeAfterWait) {
+          await saveDebug(
+            page,
+            1,
+            'google-challenge-after-login'
+          );
+
+          throw new Error(
+            'Google menampilkan verifikasi tambahan setelah password.'
+          );
         }
-      }
 
-      /*
-       * Selama form login masih terlihat, tunggu.
-       */
-      if (emailVisible || passwordVisible) {
-        await page.waitForTimeout(1500);
-        continue;
-      }
-
-      /*
-       * Jika sudah tidak berada di URL login Google,
-       * proses redirect dianggap selesai.
-       */
-      if (!isGoogleLoginUrl(currentUrl)) {
-        await page.waitForTimeout(5000);
-
-        const stillEmailVisible =
-          await isVisible(
-            page,
-            '#identifierId, input[type="email"]'
-          );
-
-        const stillPasswordVisible =
-          await isVisible(
-            page,
-            'input[type="password"]'
-          );
-
-        if (!stillEmailVisible && !stillPasswordVisible) {
+        if (!formAfterWait) {
           console.log(
-            `[email:${emailIndex}] Login Google berhasil/redirect selesai.`
+            `[email:${emailIndex}] Session Google dianggap siap.`
+          );
+
+          console.log(
+            `[email:${emailIndex}] URL login terakhir: ${currentUrl}`
           );
 
           return true;
         }
       }
 
-      await page.waitForTimeout(1500);
+      if (Date.now() - lastLogAt > 10000) {
+        console.log(
+          `[email:${emailIndex}] Login masih diproses: ${currentUrl}`
+        );
+
+        lastLogAt = Date.now();
+      }
+
+      await page.waitForTimeout(2000);
     }
 
+    await saveDebug(
+      page,
+      1,
+      'login-timeout'
+    );
+
     throw new Error(
-      'Login Google belum selesai setelah menunggu 60 detik.'
+      'Login Google belum selesai setelah 120 detik. ' +
+      'Cek artifact login-timeout untuk melihat halaman terakhir.'
     );
   }
 
@@ -422,7 +423,7 @@ async function safeScreenshot(page, filePath) {
 
     await emailInput.waitFor({
       state: 'visible',
-      timeout: 30000
+      timeout: 40000
     });
 
     await emailInput.fill(account.email);
@@ -433,26 +434,28 @@ async function safeScreenshot(page, filePath) {
       .catch(() => {});
 
     console.log(
-      `[email:${emailIndex}] Email dikirim. Menunggu form password.`
+      `[email:${emailIndex}] Email dikirim. ` +
+      'Menunggu form password.'
     );
 
-    await loginPage.waitForTimeout(3000);
+    await loginPage.waitForTimeout(4000);
 
     /*
-     * Jika account chooser tampil, pilih "Use another account"
-     * lalu tunggu form password muncul.
+     * Jika account chooser muncul, pilih Use another account.
      */
-    const useAnotherAccount = loginPage
-      .getByText('Use another account', { exact: false })
+    const anotherAccount = loginPage
+      .getByText('Use another account', {
+        exact: false
+      })
       .first();
 
     if (
-      await useAnotherAccount
-        .isVisible({ timeout: 2000 })
+      await anotherAccount
+        .isVisible({ timeout: 3000 })
         .catch(() => false)
     ) {
-      await useAnotherAccount.click().catch(() => {});
-      await loginPage.waitForTimeout(2500);
+      await anotherAccount.click().catch(() => {});
+      await loginPage.waitForTimeout(3000);
     }
 
     const passwordInput = loginPage
@@ -461,7 +464,7 @@ async function safeScreenshot(page, filePath) {
 
     await passwordInput.waitFor({
       state: 'visible',
-      timeout: 40000
+      timeout: 50000
     });
 
     await passwordInput.fill(account.password);
@@ -472,22 +475,26 @@ async function safeScreenshot(page, filePath) {
       .catch(() => {});
 
     console.log(
-      `[email:${emailIndex}] Password dikirim. Menunggu proses login.`
+      `[email:${emailIndex}] Password dikirim. ` +
+      'Menunggu proses login.'
+    );
+
+    await loginPage.waitForTimeout(8000);
+
+    await waitForLoginCompletion(
+      loginPage
     );
 
     /*
-     * Tunggu jauh lebih lama agar redirect, cookie, dan token
-     * Google selesai dibuat.
+     * Waktu tambahan untuk propagasi cookie/token Google.
      */
-    await loginPage.waitForTimeout(5000);
+    await loginPage.waitForTimeout(10000);
 
-    await waitForGoogleLogin(loginPage);
+    const cookies = await context.cookies();
 
-    /*
-     * Beri waktu tambahan untuk cookie/session propagation
-     * sebelum membuka lima URL.
-     */
-    await loginPage.waitForTimeout(5000);
+    console.log(
+      `[email:${emailIndex}] Jumlah cookie session: ${cookies.length}`
+    );
 
     console.log(
       `[email:${emailIndex}] Session Google siap digunakan.`
@@ -505,9 +512,10 @@ async function safeScreenshot(page, filePath) {
     });
 
     /*
-     * AI Studio melakukan banyak request asynchronous.
+     * AI Studio memerlukan waktu untuk memuat aplikasi,
+     * token, dan komponen frontend.
      */
-    await page.waitForTimeout(10000);
+    await page.waitForTimeout(15000);
 
     await handleContinueAndSkip(
       page,
@@ -521,7 +529,7 @@ async function safeScreenshot(page, filePath) {
     const currentUrl = page.url();
 
     console.log(
-      `[email:${emailIndex}][tab:${tabIndex}] URL akhir: ${currentUrl}`
+      `[email:${emailIndex}][tab:${tabIndex}] URL: ${currentUrl}`
     );
 
     if (!currentUrl || currentUrl === 'about:blank') {
@@ -529,20 +537,25 @@ async function safeScreenshot(page, filePath) {
     }
 
     /*
-     * Jangan memeriksa body dengan regex "Continue to the app".
-     * Teks tersebut dapat berada pada template/element tersembunyi.
+     * Hanya URL login/challenge yang dianggap invalid.
+     * Jangan memeriksa body dengan regex "Continue to the app",
+     * karena teks itu bisa ada di template tersembunyi.
      */
-    if (isGoogleLoginUrl(currentUrl)) {
+    if (
+      /accounts\.google\.com\/(signin|ServiceLogin|challenge)/i.test(
+        currentUrl
+      )
+    ) {
       return false;
     }
 
-    const loginSelectors = [
+    const selectors = [
       'input[type="password"]',
       '#identifierId',
       'input[type="email"]'
     ];
 
-    for (const selector of loginSelectors) {
+    for (const selector of selectors) {
       const count = await page
         .locator(selector)
         .count()
@@ -562,8 +575,8 @@ async function safeScreenshot(page, filePath) {
     }
 
     /*
-     * 401 analytics, 403 telemetry, atau 404 resource frontend
-     * tidak otomatis berarti halaman utama gagal.
+     * HTTP 401/403/404 dari analytics, telemetry, ads,
+     * atau resource frontend tidak langsung membuat halaman invalid.
      */
     return true;
   }
@@ -579,7 +592,7 @@ async function safeScreenshot(page, filePath) {
         timeout: 60000
       });
 
-      await page.waitForTimeout(10000);
+      await page.waitForTimeout(12000);
 
       await handleContinueAndSkip(
         page,
@@ -588,15 +601,12 @@ async function safeScreenshot(page, filePath) {
 
       await page.waitForTimeout(3000);
 
-      const valid = await isTargetValid(
-        page,
-        tabIndex
-      );
-
-      if (!valid) {
+      if (
+        !(await isTargetValid(page, tabIndex))
+      ) {
         console.warn(
           `[email:${emailIndex}][tab:${tabIndex}] ` +
-          'Session terlihat kembali ke login. Membuka ulang target.'
+          'Session kembali ke login. Membuka ulang target.'
         );
 
         await openTarget(
@@ -635,7 +645,7 @@ async function safeScreenshot(page, filePath) {
   try {
     /*
      * Buat lima tab dalam satu browser context.
-     * Semua tab berbagi cookie/session email yang sama.
+     * Semua tab menggunakan session email yang sama.
      */
     for (let index = 0; index < 5; index += 1) {
       const page = await context.newPage();
@@ -643,8 +653,8 @@ async function safeScreenshot(page, filePath) {
       pages.push(page);
 
       /*
-       * Jangan mencetak semua console browser.
-       * Warning CSP dan request analytics biasanya bukan fatal.
+       * Batasi log console agar warning analytics/CSP
+       * tidak memenuhi output Actions.
        */
       page.on('console', (message) => {
         const text = message.text();
@@ -666,8 +676,8 @@ async function safeScreenshot(page, filePath) {
       });
 
       /*
-       * Abaikan request analytics/iklan yang sering 401/403
-       * di GitHub-hosted runner.
+       * Request analytics/iklan sering gagal di runner.
+       * Tidak perlu dianggap error fatal.
        */
       page.on('requestfailed', (request) => {
         const requestUrl = request.url();
@@ -680,20 +690,20 @@ async function safeScreenshot(page, filePath) {
           console.warn(
             `[email:${emailIndex}][tab:${index + 1}] ` +
             `Request gagal: ${request.method()} ` +
-            `${requestUrl.slice(0, 300)}`
+            requestUrl.slice(0, 300)
           );
         }
       });
     }
 
     /*
-     * Login hanya sekali melalui tab pertama.
+     * Login satu kali memakai tab pertama.
      */
     await loginGoogle();
 
     /*
-     * Setelah session siap, buka lima URL.
-     * Kegagalan satu tab tidak menghentikan empat tab lain.
+     * Buka lima URL.
+     * Kalau satu tab gagal, empat tab lain tetap berjalan.
      */
     for (let index = 0; index < pages.length; index += 1) {
       const tabIndex = index + 1;
@@ -721,7 +731,7 @@ async function safeScreenshot(page, filePath) {
 
           console.warn(
             `[email:${emailIndex}][tab:${tabIndex}] ` +
-            'Halaman terlihat masih login. Tab tetap dipantau.'
+            'Tab masih terlihat seperti halaman login.'
           );
         }
 
@@ -768,9 +778,6 @@ async function safeScreenshot(page, filePath) {
       const untilEnd =
         endAt - Date.now();
 
-      /*
-       * Gunakan Math.min agar reload 30 menit tidak terlewati.
-       */
       const waitTime = Math.min(
         30000,
         Math.max(
@@ -798,14 +805,10 @@ async function safeScreenshot(page, filePath) {
             break;
           }
 
-          const tabIndex = index + 1;
-          const page = pages[index];
-          const targetUrl = targetUrls[index];
-
           await reloadTab(
-            page,
-            targetUrl,
-            tabIndex
+            pages[index],
+            targetUrls[index],
+            index + 1
           );
         }
 
