@@ -4,12 +4,12 @@ const fs = require('fs');
 let abortRequested = false;
 
 process.on('SIGTERM', () => {
-  console.warn('SIGTERM diterima. Proses akan berhenti dengan aman.');
+  console.warn('SIGTERM diterima.');
   abortRequested = true;
 });
 
 process.on('SIGINT', () => {
-  console.warn('SIGINT diterima. Proses akan berhenti dengan aman.');
+  console.warn('SIGINT diterima.');
   abortRequested = true;
 });
 
@@ -26,6 +26,27 @@ function parseList(value) {
     .split(/[\r\n,]+/)
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function parseAccounts(value) {
+  return String(value || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line, index) => {
+      const separatorIndex = line.indexOf(':');
+
+      if (separatorIndex <= 0) {
+        throw new Error(
+          `Format akun invalid pada baris ${index + 1}. Gunakan format email:password`
+        );
+      }
+
+      return {
+        email: line.slice(0, separatorIndex).trim(),
+        password: line.slice(separatorIndex + 1).trim()
+      };
+    });
 }
 
 function sleep(ms) {
@@ -51,35 +72,37 @@ function sleep(ms) {
   const emailIndex = Math.max(1, parseInt(process.env.EMAIL_INDEX || '1', 10));
   const urlIndex = Math.max(1, parseInt(process.env.URL_INDEX || '1', 10));
 
-  const emails = parseList(process.env.GMAIL_USER_LIST);
+  const accounts = parseAccounts(process.env.GMAIL_ACCOUNT_LIST);
   const urls = parseList(process.env.AI_STUDIO_URL);
 
-  const username = emails[emailIndex - 1] || process.env.GMAIL_USERNAME || '';
+  const account = accounts[emailIndex - 1];
   const targetUrl = urls[urlIndex - 1];
 
-  if (!username) {
+  if (!account) {
     throw new Error(
-      `Email index ${emailIndex} tidak ditemukan. Total email = ${emails.length}.`
+      `Akun index ${emailIndex} tidak ditemukan. Total akun: ${accounts.length}`
     );
   }
 
   if (!targetUrl) {
     throw new Error(
-      `URL index ${urlIndex} tidak ditemukan. Total URL = ${urls.length}.`
+      `URL index ${urlIndex} tidak ditemukan. Total URL: ${urls.length}`
     );
   }
 
-  const password = process.env.GMAIL_PASSWORD || '';
+  const username = account.email;
+  const password = account.password;
+
   const keepOpenMinutes = Math.max(
     1,
     parseInt(process.env.KEEP_OPEN_MINUTES || '350', 10)
   );
+
   const reloadIntervalMinutes = Math.max(
     1,
     parseInt(process.env.RELOAD_INTERVAL_MINUTES || '30', 10)
   );
 
-  console.log(`[email:${emailIndex}][url:${urlIndex}] start`);
   console.log(`[email:${emailIndex}][url:${urlIndex}] username: ${username}`);
   console.log(`[email:${emailIndex}][url:${urlIndex}] target: ${targetUrl}`);
   console.log(`[email:${emailIndex}][url:${urlIndex}] keep: ${keepOpenMinutes} menit`);
@@ -146,7 +169,7 @@ function sleep(ms) {
             return true;
           }
         } catch (err) {
-          // lanjut ke value berikutnya
+          // lanjut
         }
       }
     }
@@ -166,16 +189,17 @@ function sleep(ms) {
       return;
     }
 
-    if (!password) {
-      throw new Error('GMAIL_PASSWORD wajib diisi jika GMAIL_STORAGE_STATE tidak tersedia');
+    if (!username || !password) {
+      throw new Error('Email atau password akun tidak tersedia.');
     }
 
-    console.log(`[email:${emailIndex}][url:${urlIndex}] buka halaman login Google`);
-
-    await page.goto('https://accounts.google.com/signin/v2/identifier', {
-      waitUntil: 'domcontentloaded',
-      timeout: 60000
-    });
+    await page.goto(
+      'https://accounts.google.com/signin/v2/identifier',
+      {
+        waitUntil: 'domcontentloaded',
+        timeout: 60000
+      }
+    );
 
     const emailInput = page.locator('#identifierId, input[type="email"]').first();
     await emailInput.waitFor({ state: 'visible', timeout: 30000 });
@@ -260,7 +284,11 @@ function sleep(ms) {
         console.log(`[email:${emailIndex}][url:${urlIndex}] reload halaman pada ${now()}`);
 
         try {
-          await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
+          await page.reload({
+            waitUntil: 'domcontentloaded',
+            timeout: 60000
+          });
+
           await page.waitForTimeout(3000);
           await handleContinueAndSkip();
 
@@ -270,6 +298,7 @@ function sleep(ms) {
           }
         } catch (error) {
           console.warn(`[email:${emailIndex}][url:${urlIndex}] reload gagal: ${error.message}`);
+
           try {
             await openTarget();
           } catch (reopenError) {
