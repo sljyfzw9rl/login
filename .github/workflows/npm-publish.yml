@@ -17,21 +17,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
-    strategy:
-      fail-fast: false
-
-      # Hanya 5 job.
-      # Satu job = satu email = lima tab.
-      matrix:
-        email_index: [1, 2, 3, 4, 5]
-
-      max-parallel: 5
-
     env:
       GMAIL_ACCOUNT_LIST: ${{ secrets.GMAIL_ACCOUNT_LIST }}
       AI_STUDIO_URL: ${{ secrets.AI_STUDIO_URL }}
 
-      EMAIL_INDEX: ${{ matrix.email_index }}
       KEEP_OPEN_MINUTES: '350'
       RELOAD_INTERVAL_MINUTES: '30'
 
@@ -49,7 +38,7 @@ jobs:
           npm install
           npx playwright install --with-deps chromium
 
-      - name: Run one email with five tabs
+      - name: Run five emails with five tabs each
         run: node scripts/login-and-click.js
 
       - name: Upload screenshots and debug files
@@ -57,25 +46,24 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: screenshots-email-${{ matrix.email_index }}
+          name: screenshots-all-emails
           if-no-files-found: ignore
           retention-days: 7
           path: |
-            opened-email-${{ matrix.email_index }}-url-*.png
-            debug-email-${{ matrix.email_index }}-url-*.png
-            debug-email-${{ matrix.email_index }}-url-*.html
-            debug-email-${{ matrix.email_index }}-url-*-cookies.json
-            debug-email-${{ matrix.email_index }}-url-*-url.txt
+            opened-email-*-url-*.png
+            debug-email-*-url-*.png
+            debug-email-*-url-*.html
+            debug-email-*-url-*-cookies.json
+            debug-email-*-url-*-url.txt
 
       - name: Create screenshot link in Summary
         if: always()
         shell: bash
         env:
           ARTIFACT_URL: ${{ steps.upload_artifacts.outputs.artifact-url }}
-          EMAIL_INDEX: ${{ matrix.email_index }}
         run: |
           {
-            echo "## Screenshot Email ${EMAIL_INDEX}"
+            echo "## Screenshot seluruh email"
             echo
             if [ -n "$ARTIFACT_URL" ]; then
               echo "[Buka screenshot dan debug artifact](${ARTIFACT_URL})"
@@ -83,5 +71,5 @@ jobs:
               echo "Artifact screenshot tidak tersedia."
             fi
             echo
-            echo "Job ini menggunakan email index ${EMAIL_INDEX} dan lima tab AI Studio."
+            echo "Job ini menggunakan 5 email dan 5 tab AI Studio per email (25 tab total)."
           } >> "$GITHUB_STEP_SUMMARY"

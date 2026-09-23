@@ -19,13 +19,13 @@ Workflow dijalankan setiap 6 jam menggunakan cron UTC:
 0 */6 * * *
 ```
 
-Setiap workflow menjalankan lima instance:
+Setiap workflow menjalankan satu job yang memproses lima akun secara paralel. Setiap akun membuka lima tab/context terisolasi, sehingga totalnya 25 tab:
 
-- Instance 1 menggunakan URL pertama.
-- Instance 2 menggunakan URL kedua.
-- Instance 3 menggunakan URL ketiga.
-- Instance 4 menggunakan URL keempat.
-- Instance 5 menggunakan URL kelima.
+- Email 1 membuka URL 1 sampai URL 5.
+- Email 2 membuka URL 1 sampai URL 5.
+- Email 3 membuka URL 1 sampai URL 5.
+- Email 4 membuka URL 1 sampai URL 5.
+- Email 5 membuka URL 1 sampai URL 5.
 
 Browser tetap terbuka selama 350 menit. Setelah itu browser ditutup agar tidak melewati batas waktu runner GitHub Actions enam jam.
 
@@ -57,32 +57,36 @@ https://url4
 https://url5
 ```
 
-### GMAIL_USER_LIST
+### GMAIL_ACCOUNT_LIST
 
-Isi daftar email sesuai urutan URL:
+Isi lima akun dalam format `email:password`, satu akun per baris:
 
 ```text
-email1@gmail.com,email2@gmail.com,email3@gmail.com,email4@gmail.com,email5@gmail.com
+email1@gmail.com:password1
+email2@gmail.com:password2
+email3@gmail.com:password3
+email4@gmail.com:password4
+email5@gmail.com:password5
 ```
 
 Atau:
 
 ```text
-email1@gmail.com
-email2@gmail.com
-email3@gmail.com
-email4@gmail.com
-email5@gmail.com
+email1@gmail.com:password1
+email2@gmail.com:password2
+email3@gmail.com:password3
+email4@gmail.com:password4
+email5@gmail.com:password5
 ```
 
 Pemetaan:
 
 ```text
-URL 1 → email 1
-URL 2 → email 2
-URL 3 → email 3
-URL 4 → email 4
-URL 5 → email 5
+Email 1 → URL 1, URL 2, URL 3, URL 4, URL 5
+Email 2 → URL 1, URL 2, URL 3, URL 4, URL 5
+Email 3 → URL 1, URL 2, URL 3, URL 4, URL 5
+Email 4 → URL 1, URL 2, URL 3, URL 4, URL 5
+Email 5 → URL 1, URL 2, URL 3, URL 4, URL 5
 ```
 
 ### GMAIL_PASSWORD

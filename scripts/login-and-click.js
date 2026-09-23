@@ -319,23 +319,21 @@ async function runIsolatedSession({
 }
 
 (async () => {
-  const emailIndex = Math.max(1, parseInt(process.env.EMAIL_INDEX || '1', 10));
   const keepOpenMinutes = Math.max(1, parseInt(process.env.KEEP_OPEN_MINUTES || '350', 10));
   const reloadIntervalMinutes = Math.max(1, parseInt(process.env.RELOAD_INTERVAL_MINUTES || '30', 10));
-
   const accounts = parseAccounts(process.env.GMAIL_ACCOUNT_LIST);
   const urls = parseList(process.env.AI_STUDIO_URL);
 
-  const account = accounts[emailIndex - 1];
-  if (!account) throw new Error(`Akun index ${emailIndex} tidak ditemukan.`);
+  if (accounts.length < 5) {
+    throw new Error(`Dibutuhkan minimal 5 akun pada GMAIL_ACCOUNT_LIST, tetapi hanya ditemukan ${accounts.length}.`);
+  }
   if (urls.length === 0) throw new Error('AI_STUDIO_URL kosong.');
 
-  // Ambil 5 URL (cycle kalau kurang dari 5)
+  // Satu proses menangani lima akun. Setiap akun membuka lima context/tab.
+  const selectedAccounts = accounts.slice(0, 5);
   const targetUrls = Array.from({ length: 5 }, (_, index) => urls[index % urls.length]);
-
   const tempDirectory = path.resolve('.runtime');
   fs.mkdirSync(tempDirectory, { recursive: true });
-  const statePath = path.join(tempDirectory, `storage-email-${emailIndex}.json`);
 
   const browser = await chromium.launch({
     headless: true,
@@ -348,31 +346,46 @@ async function runIsolatedSession({
   });
 
   try {
-    // Login + warm-up AI Studio dulu
-    await loginOnceAndSaveState({
-      browser,
-      account,
-      emailIndex,
-      statePath,
-      warmUpUrl: targetUrls[0]          // <-- penting: pakai URL asli
+    console.log(`TOTAL_ACCOUNTS=${selectedAccounts.length}`);
+    console.log(`TOTAL_ISOLATED_SESSIONS=${selectedAccounts.length * targetUrls.length}`);
+
+    const accountRuns = selectedAccounts.map(async (account, accountOffset) => {
+      const emailIndex = accountOffset + 1;
+      const statePath = path.join(tempDirectory, `storage-email-${emailIndex}.json`);
+
+      // Login dan warm-up dilakukan satu kali per akun.
+      await loginOnceAndSaveState({
+        browser,
+        account,
+        emailIndex,
+        statePath,
+        warmUpUrl: targetUrls[0]
+      });
+
+      console.log(`[email:${emailIndex}] Menjalankan ${targetUrls.length} context terisolasi.`);
+      await Promise.all(
+        targetUrls.map((targetUrl, index) =>
+          runIsolatedSession({
+            browser,
+            statePath,
+            targetUrl,
+            emailIndex,
+            urlIndex: index + 1,
+            keepOpenMinutes,
+            reloadIntervalMinutes
+          })
+        )
+      );
     });
 
-    console.log(`[email:${emailIndex}] Menjalankan 5 context terisolasi.`);
-    console.log('TOTAL_ISOLATED_SESSIONS=5');
-
-    await Promise.all(
-      targetUrls.map((targetUrl, index) =>
-        runIsolatedSession({
-          browser,
-          statePath,
-          targetUrl,
-          emailIndex,
-          urlIndex: index + 1,
-          keepOpenMinutes,
-          reloadIntervalMinutes
-        })
-      )
-    );
+    // Satu akun gagal tidak boleh membatalkan session akun lain yang sudah valid.
+    const results = await Promise.allSettled(accountRuns);
+    const failures = results
+      .map((result, index) => result.status === 'rejected' ? `email ${index + 1}: ${result.reason?.message || result.reason}` : null)
+      .filter(Boolean);
+    if (failures.length > 0) {
+      throw new Error(`Sebagian akun gagal diproses:\n${failures.join('\n')}`);
+    }
   } finally {
     await browser.close().catch(() => {});
     fs.rmSync(tempDirectory, { recursive: true, force: true });
