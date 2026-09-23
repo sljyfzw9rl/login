@@ -2,7 +2,6 @@ name: Keep AI Studio sessions alive - 25 matrix
 
 on:
   schedule:
-    # UTC. Setiap 6 jam.
     - cron: '0 */6 * * *'
   workflow_dispatch:
 
@@ -20,16 +19,12 @@ jobs:
       matrix:
         email_index: [1, 2, 3, 4, 5]
         url_index: [1, 2, 3, 4, 5]
-      # Jika kuota GitHub Actions cukup, bisa 25.
-      # Kalau mau lebih aman, ganti ke 5.
       max-parallel: 25
 
     env:
-      GMAIL_USER_LIST: ${{ secrets.GMAIL_USER_LIST }}
-      GMAIL_USERNAME: ${{ secrets.GMAIL_USERNAME }}
-      GMAIL_PASSWORD: ${{ secrets.GMAIL_PASSWORD }}
-      GMAIL_STORAGE_STATE: ${{ secrets.GMAIL_STORAGE_STATE }}
+      GMAIL_ACCOUNT_LIST: ${{ secrets.GMAIL_ACCOUNT_LIST }}
       AI_STUDIO_URL: ${{ secrets.AI_STUDIO_URL }}
+      GMAIL_STORAGE_STATE: ${{ secrets.GMAIL_STORAGE_STATE }}
 
       KEEP_OPEN_MINUTES: '350'
       RELOAD_INTERVAL_MINUTES: '30'
@@ -52,7 +47,7 @@ jobs:
           npm ci || npm install
           npx playwright install --with-deps chromium
 
-      - name: Decode storage state if provided
+      - name: Restore Playwright storage state
         if: ${{ env.GMAIL_STORAGE_STATE != '' }}
         shell: bash
         run: |
