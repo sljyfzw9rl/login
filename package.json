@@ -6,7 +6,10 @@
     "start": "node scripts/login-and-click.js",
     "save-state": "node scripts/save-state.js"
   },
+  "engines": {
+    "node": ">=24"
+  },
   "dependencies": {
-    "playwright": "^1.40.0"
+    "playwright": "^1.56.0"
   }
 }
