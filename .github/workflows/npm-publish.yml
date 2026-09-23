@@ -2,10 +2,7 @@ name: Keep AI Studio sessions alive
 
 on:
   schedule:
-    # GitHub Actions menggunakan UTC.
-    # Berjalan setiap 6 jam: 00:00, 06:00, 12:00, 18:00 UTC.
     - cron: '0 */6 * * *'
-
   workflow_dispatch:
 
 concurrency:
@@ -15,70 +12,39 @@ concurrency:
 jobs:
   visit:
     runs-on: ubuntu-latest
-
-    # Batas maksimum satu job adalah 6 jam.
-    # Script browser berjalan 350 menit agar ada waktu cleanup.
     timeout-minutes: 360
 
     strategy:
       fail-fast: false
-
-      # Hanya 5 job.
-      # Setiap job memakai 1 email dan membuka 5 tab.
       matrix:
         email_index: [1, 2, 3, 4, 5]
-
-      # Lima email berjalan bersamaan.
       max-parallel: 5
 
     env:
-      # Format secret:
-      # email1:password1
-      # email2:password2
-      # email3:password3
-      # email4:password4
-      # email5:password5
       GMAIL_ACCOUNT_LIST: ${{ secrets.GMAIL_ACCOUNT_LIST }}
-
-      # Lima URL, dipisahkan koma atau baris baru.
       AI_STUDIO_URL: ${{ secrets.AI_STUDIO_URL }}
-
-      # Browser aktif 5 jam 50 menit.
       KEEP_OPEN_MINUTES: '350'
-
-      # Semua tab reload setiap 30 menit.
       RELOAD_INTERVAL_MINUTES: '30'
-
-      # Index email untuk job ini.
       EMAIL_INDEX: ${{ matrix.email_index }}
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Setup Node.js 24
+      - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
           node-version: '24'
 
-      - name: Show environment
-        run: |
-          node --version
-          npm --version
-
-      - name: Install Node dependencies
+      - name: Install dependencies
         run: |
           npm install
-
-      - name: Install Playwright Chromium
-        run: |
           npx playwright install --with-deps chromium
 
       - name: Run one email with five tabs
-        run: |
-          node scripts/login-and-click.js
+        run: node scripts/login-and-click.js
 
-      - name: Upload screenshots and debug artifacts
+      - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
