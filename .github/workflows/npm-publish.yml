@@ -1,42 +1,41 @@
-name: Keep AI Studio sessions alive
+name: Keep AI Studio sessions alive - 25 matrix
 
 on:
   schedule:
-    # GitHub Actions menggunakan UTC.
-    # Jalan setiap 6 jam: 00:00, 06:00, 12:00, 18:00 UTC.
+    # UTC. Setiap 6 jam.
     - cron: '0 */6 * * *'
   workflow_dispatch:
 
 concurrency:
-  group: ai-studio-keepalive
+  group: ai-studio-25-matrix
   cancel-in-progress: false
 
 jobs:
   visit:
     runs-on: ubuntu-latest
-
-    # Maksimal 6 jam. Browser disetel 350 menit agar ada waktu cleanup.
     timeout-minutes: 360
 
     strategy:
       fail-fast: false
       matrix:
-        # Instance 1 menggunakan URL 1, instance 2 menggunakan URL 2, dst.
-        instance: [1, 2, 3, 4, 5]
-      max-parallel: 5
+        email_index: [1, 2, 3, 4, 5]
+        url_index: [1, 2, 3, 4, 5]
+      # Jika kuota GitHub Actions cukup, bisa 25.
+      # Kalau mau lebih aman, ganti ke 5.
+      max-parallel: 25
 
     env:
-      AI_STUDIO_URL: ${{ secrets.AI_STUDIO_URL }}
       GMAIL_USER_LIST: ${{ secrets.GMAIL_USER_LIST }}
       GMAIL_USERNAME: ${{ secrets.GMAIL_USERNAME }}
       GMAIL_PASSWORD: ${{ secrets.GMAIL_PASSWORD }}
       GMAIL_STORAGE_STATE: ${{ secrets.GMAIL_STORAGE_STATE }}
+      AI_STUDIO_URL: ${{ secrets.AI_STUDIO_URL }}
 
-      # 350 menit = 5 jam 50 menit.
       KEEP_OPEN_MINUTES: '350'
-
-      # Reload halaman setiap 30 menit.
       RELOAD_INTERVAL_MINUTES: '30'
+
+      EMAIL_INDEX: ${{ matrix.email_index }}
+      URL_INDEX: ${{ matrix.url_index }}
 
     steps:
       - name: Checkout
@@ -53,26 +52,24 @@ jobs:
           npm ci || npm install
           npx playwright install --with-deps chromium
 
-      - name: Restore Playwright storage state
+      - name: Decode storage state if provided
         if: ${{ env.GMAIL_STORAGE_STATE != '' }}
         shell: bash
         run: |
           printf '%s' "$GMAIL_STORAGE_STATE" | base64 --decode > storageState.json
           test -s storageState.json
 
-      - name: Run browser keepalive
-        env:
-          INSTANCE: ${{ matrix.instance }}
+      - name: Run AI Studio browser session
         run: node scripts/login-and-click.js
 
-      - name: Upload screenshots and debug artifacts
+      - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: artifacts-instance-${{ matrix.instance }}
+          name: artifacts-email-${{ matrix.email_index }}-url-${{ matrix.url_index }}
           if-no-files-found: ignore
           path: |
-            opened-${{ matrix.instance }}-*.png
-            debug-${{ matrix.instance }}-*.png
-            debug-${{ matrix.instance }}-*.html
-            debug-${{ matrix.instance }}-cookies.json
+            opened-email-${{ matrix.email_index }}-url-${{ matrix.url_index }}-*.png
+            debug-email-${{ matrix.email_index }}-url-${{ matrix.url_index }}-*.png
+            debug-email-${{ matrix.email_index }}-url-${{ matrix.url_index }}-*.html
+            debug-email-${{ matrix.email_index }}-url-${{ matrix.url_index }}-*.json
