@@ -23,9 +23,9 @@ jobs:
     env:
       GMAIL_ACCOUNT_LIST: ${{ secrets.GMAIL_ACCOUNT_LIST }}
       AI_STUDIO_URL: ${{ secrets.AI_STUDIO_URL }}
+      EMAIL_INDEX: ${{ matrix.email_index }}
       KEEP_OPEN_MINUTES: '350'
       RELOAD_INTERVAL_MINUTES: '30'
-      EMAIL_INDEX: ${{ matrix.email_index }}
 
     steps:
       - name: Checkout
